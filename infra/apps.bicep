@@ -69,7 +69,7 @@ param mailFromAddress string = 'noreply@capstone.local'
 param mailFromName string = 'Capstone Auth'
 param vendorManagementUrl string = ''
 param authWebApiUrl string = 'http://localhost:8000'
-param placeholderImage string = 'mcr.microsoft.com/azuredocs/aks-helloworld:latest'
+param placeholderImage string = 'docker.io/library/nginx:alpine'
 
 // ---------------------------------------------------------------------------
 //  Shared references
