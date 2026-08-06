@@ -130,7 +130,7 @@ $n = 0
 foreach ($b in $builds) {
     $n++
     Write-Host "  ($n/$($builds.Count)) $($b.Dockerfile) -> $($b.Name)" -ForegroundColor Yellow
-    $argList = @("--registry",$AcrName,"--image",$b.Name,"--file",$b.Dockerfile)
+    $argList = @("--registry",$AcrName,"--image",$b.Name,"--file",(Join-Path $b.Ctx $b.Dockerfile))
     foreach ($a in $b.Args) { $argList += @("--build-arg", $a) }
     $argList += $b.Ctx
     az acr build @argList --output none
