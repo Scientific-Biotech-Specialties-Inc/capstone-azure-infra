@@ -515,7 +515,7 @@ resource ocrWorker 'Microsoft.App/containerApps@2024-03-01' = {
           image: placeholderImage
           command: [ 'celery' ]
           args: [ '-A', 'app.tasks.celery_app', 'worker', '--loglevel=info' ]
-          resources: { cpu: '1.0', memory: '1.5Gi' }
+          resources: { cpu: '1.0', memory: '2.0Gi' }
           env: [
             { name: 'APP_ENV', value: 'production' }
             { name: 'SERMS_API_KEY', secretRef: 'serms-api-key' }
