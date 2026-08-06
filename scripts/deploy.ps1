@@ -109,7 +109,9 @@ az deployment group create `
 if ($LASTEXITCODE -ne 0) { throw "Container apps deployment failed." }
 
 # ---------------------------------------------------------------------------
-# 3. Build & push images (now that auth-proxy FQDN is known)
+# 3. Build & push images locally (Docker Desktop), then push to ACR.
+#    NOTE: 'az acr build' (ACR Tasks) is disabled on the Azure for Students
+#    subscription, so we build on the local machine and push directly.
 # ---------------------------------------------------------------------------
 $authProxyFqdn = (az containerapp show -n "auth-proxy" -g $Resource --query "properties.configuration.ingress.fqdn" -o tsv)
 if (-not $authProxyFqdn) { throw "Could not resolve auth-proxy FQDN." }
@@ -126,15 +128,26 @@ $builds = @(
     @{ Name = "$acrLoginServer/mysql-init:$ImageTag"; Ctx = (Join-Path $InfraRoot "containers\mysql");            Dockerfile = "Dockerfile";          Args = @() }
 )
 
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw "Docker Desktop not found. Install it, start it, then re-run."
+}
+az acr login --name $AcrName
+if ($LASTEXITCODE -ne 0) { throw "az acr login failed." }
+
 $n = 0
 foreach ($b in $builds) {
     $n++
-    Write-Host "  ($n/$($builds.Count)) $($b.Dockerfile) -> $($b.Name)" -ForegroundColor Yellow
-    $argList = @("--registry",$AcrName,"--image",$b.Name,"--file",(Join-Path $b.Ctx $b.Dockerfile))
-    foreach ($a in $b.Args) { $argList += @("--build-arg", $a) }
-    $argList += $b.Ctx
-    az acr build @argList --output none
+    Write-Host "  ($n/$($builds.Count)) docker build $($b.Dockerfile) -> $($b.Name)" -ForegroundColor Yellow
+    $df = Join-Path $b.Ctx $b.Dockerfile
+    $bargs = @("build", "-f", $df, "-t", $b.Name)
+    foreach ($a in $b.Args) { $bargs += @("--build-arg", $a) }
+    $bargs += $b.Ctx
+    docker @bargs
     if ($LASTEXITCODE -ne 0) { throw "Build failed for $($b.Name)" }
+
+    Write-Host "  pushing $($b.Name)" -ForegroundColor DarkGray
+    docker push $b.Name
+    if ($LASTEXITCODE -ne 0) { throw "Push failed for $($b.Name)" }
 }
 
 # ---------------------------------------------------------------------------
