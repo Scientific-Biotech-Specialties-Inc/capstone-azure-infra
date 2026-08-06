@@ -130,8 +130,9 @@ $n = 0
 foreach ($b in $builds) {
     $n++
     Write-Host "  ($n/$($builds.Count)) $($b.Dockerfile) -> $($b.Name)" -ForegroundColor Yellow
-    $argList = @("--registry",$AcrName,"--image",$b.Name,"--file",$b.Dockerfile,"--context",$b.Ctx)
+    $argList = @("--registry",$AcrName,"--image",$b.Name,"--file",$b.Dockerfile)
     foreach ($a in $b.Args) { $argList += @("--build-arg", $a) }
+    $argList += $b.Ctx
     az acr build @argList --output none
     if ($LASTEXITCODE -ne 0) { throw "Build failed for $($b.Name)" }
 }
