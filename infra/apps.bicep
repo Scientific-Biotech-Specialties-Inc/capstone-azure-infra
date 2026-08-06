@@ -69,6 +69,7 @@ param mailFromAddress string = 'noreply@capstone.local'
 param mailFromName string = 'Capstone Auth'
 param vendorManagementUrl string = ''
 param authWebApiUrl string = 'http://localhost:8000'
+param placeholderImage string = 'mcr.microsoft.com/helloworld:latest'
 
 // ---------------------------------------------------------------------------
 //  Shared references
@@ -117,7 +118,7 @@ resource authProxy 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'auth-proxy'
-          image: '${loginServer}/auth-proxy:${imageTag}'
+          image: placeholderImage
           resources: { cpu: '0.25', memory: '0.5Gi' }
           env: [
             { name: 'AUTH_WEB_URL', value: 'http://${authWeb.properties.configuration.ingress.fqdn}' }
@@ -156,7 +157,7 @@ resource authWeb 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'auth-web'
-          image: '${loginServer}/auth-web:${imageTag}'
+          image: placeholderImage
           resources: { cpu: '0.25', memory: '0.5Gi' }
           env: [
             { name: 'VITE_API_URL', value: authWebApiUrl }
@@ -195,7 +196,7 @@ resource authApi 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'auth-api'
-          image: '${loginServer}/auth-api:${imageTag}'
+          image: placeholderImage
           resources: { cpu: '0.5', memory: '1.0Gi' }
           env: [
             { name: 'APP_ENV', value: 'production' }
@@ -260,7 +261,7 @@ resource authWorker 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'auth-worker'
-          image: '${loginServer}/auth-api:${imageTag}'
+          image: placeholderImage
           command: [ 'php' ]
           args: [ 'artisan', 'queue:work', '--tries=3', '--sleep=3' ]
           resources: { cpu: '0.25', memory: '0.5Gi' }
@@ -308,7 +309,7 @@ resource sermsWeb 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'serms-web'
-          image: '${loginServer}/serms-web:${imageTag}'
+          image: placeholderImage
           resources: { cpu: '0.25', memory: '0.5Gi' }
         }
       ]
@@ -343,7 +344,7 @@ resource sermsApi 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'serms-api'
-          image: '${loginServer}/serms-api:${imageTag}'
+          image: placeholderImage
           args: [ 'php', 'artisan', 'serve', '--host=0.0.0.0', '--port=8000', '--no-reload' ]
           resources: { cpu: '0.5', memory: '1.0Gi' }
           env: [
@@ -410,7 +411,7 @@ resource sermsWorker 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'serms-worker'
-          image: '${loginServer}/serms-api:${imageTag}'
+          image: placeholderImage
           command: [ 'php' ]
           args: [ 'artisan', 'queue:work', '--sleep=3', '--tries=3' ]
           resources: { cpu: '0.25', memory: '0.5Gi' }
@@ -467,7 +468,7 @@ resource ocrApi 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'ocr-api'
-          image: '${loginServer}/ocr-api:${imageTag}'
+          image: placeholderImage
           resources: { cpu: '0.5', memory: '1.0Gi' }
           env: [
             { name: 'APP_ENV', value: 'production' }
@@ -511,7 +512,7 @@ resource ocrWorker 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'ocr-worker'
-          image: '${loginServer}/ocr-api:${imageTag}'
+          image: placeholderImage
           command: [ 'celery' ]
           args: [ '-A', 'app.tasks.celery_app', 'worker', '--loglevel=info' ]
           resources: { cpu: '1.0', memory: '1.5Gi' }
@@ -556,7 +557,7 @@ resource ollama 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'ocr-ollama'
-          image: '${loginServer}/ocr-ollama:${imageTag}'
+          image: placeholderImage
           resources: { cpu: '1.0', memory: '2.0Gi' }
         }
       ]
@@ -575,7 +576,7 @@ resource mysqlDb 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: managedEnvironment.id
     configuration: {
       activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 3306, transport: 'tcp', exposedPort: 3306 }
+      ingress: { external: false, targetPort: 3306, transport: 'tcp', exposedPort: 3306 }
       registries: [
         { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
       ]
@@ -588,7 +589,7 @@ resource mysqlDb 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'shared-mysql'
-          image: '${loginServer}/mysql-init:${imageTag}'
+          image: placeholderImage
           resources: { cpu: '0.5', memory: '1.0Gi' }
           env: [
             { name: 'MYSQL_ROOT_PASSWORD', secretRef: 'root-password' }
@@ -610,7 +611,7 @@ resource redis 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: managedEnvironment.id
     configuration: {
       activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 6379, transport: 'tcp', exposedPort: 6379 }
+      ingress: { external: false, targetPort: 6379, transport: 'tcp', exposedPort: 6379 }
       registries: [
         { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
       ]
@@ -636,7 +637,7 @@ resource postgres 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: managedEnvironment.id
     configuration: {
       activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 5432, transport: 'tcp', exposedPort: 5432 }
+      ingress: { external: false, targetPort: 5432, transport: 'tcp', exposedPort: 5432 }
       registries: [
         { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
       ]
@@ -670,7 +671,7 @@ resource mongo 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: managedEnvironment.id
     configuration: {
       activeRevisionsMode: 'Single'
-      ingress: { transport: 'tcp', targetPort: 27017, exposedPort: 27017, external: true }
+      ingress: { transport: 'tcp', targetPort: 27017, exposedPort: 27017, external: false }
       registries: [
         { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
       ]
