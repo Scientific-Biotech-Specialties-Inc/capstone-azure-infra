@@ -29,18 +29,30 @@ param minReplicas int = 1
 // ---------------------------------------------------------------------------
 // Secure secrets (passed via CLI / CI, never committed)
 // ---------------------------------------------------------------------------
-@secure() param mysqlRootPassword string
-@secure() param postgresPassword string
-@secure() param jwtSecret string
-@secure() param internalEncryptionKey string
-@secure() param sermsAppKey string
-@secure() param authAppKey string
-@secure() param supabaseAccessKey string = ''
-@secure() param supabaseSecretKey string = ''
-@secure() param aiServiceApiKey string
-@secure() param prsApiKey string = ''
-@secure() param brevoApiKey string = ''
-@secure() param mailPassword string = ''
+@secure()
+param mysqlRootPassword string
+@secure()
+param postgresPassword string
+@secure()
+param jwtSecret string
+@secure()
+param internalEncryptionKey string
+@secure()
+param sermsAppKey string
+@secure()
+param authAppKey string
+@secure()
+param supabaseAccessKey string = ''
+@secure()
+param supabaseSecretKey string = ''
+@secure()
+param aiServiceApiKey string
+@secure()
+param prsApiKey string = ''
+@secure()
+param brevoApiKey string = ''
+@secure()
+param mailPassword string = ''
 
 // ---------------------------------------------------------------------------
 //  Non-secret configuration
@@ -50,20 +62,19 @@ param supabaseBucket string = ''
 param supabaseRegion string = ''
 param supabaseEndpoint string = ''
 param brevoBaseUrl string = 'https://api.brevo.com/v3'
+@secure()
 param brevoWebhookSecret string = ''
 param brevoWebhookHeader string = 'X-Brevo-Webhook-Secret'
-param maillerHost string = '127.0.0.1'
-param mailPort string = '1025'
 param mailFromAddress string = 'noreply@capstone.local'
 param mailFromName string = 'Capstone Auth'
 param vendorManagementUrl string = ''
-param brevoTemplates string = '{}'
 param authWebApiUrl string = 'http://localhost:8000'
 
 // ---------------------------------------------------------------------------
 //  Shared references
 // ---------------------------------------------------------------------------
 var loginServer = '${acrName}.azurecr.io'
+var sermsApiFqdn = 'serms-api.${environmentName}.${location}.azurecontainerapps.io'
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: acrName
@@ -357,7 +368,7 @@ resource sermsApi 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'JWT_PUBLIC_KEY_PATH', value: 'storage/oauth-public.key' }
             { name: 'AI_SERVICE_URL', value: 'http://${ocrApi.properties.configuration.ingress.fqdn}' }
             { name: 'AI_SERVICE_API_KEY', secretRef: 'ai-api-key' }
-            { name: 'AI_SERVICE_CALLBACK_BASE_URL', value: 'http://${sermsApi.properties.configuration.ingress.fqdn}' }
+            { name: 'AI_SERVICE_CALLBACK_BASE_URL', value: 'http://${sermsApiFqdn}' }
             { name: 'AI_SERVICE_TIMEOUT', value: '10' }
             { name: 'SUPABASE_STORAGE_DRIVER', value: 's3' }
             { name: 'SUPABASE_URL', value: supabaseUrl }

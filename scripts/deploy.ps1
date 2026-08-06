@@ -88,7 +88,7 @@ $all["environmentName"] = $EnvironmentName
 $all["location"]        = $Location
 $all["imageTag"]        = $ImageTag
 $all["minReplicas"]     = $MinReplicas
-foreach ($k in @('supabaseUrl','supabaseBucket','supabaseRegion','supabaseEndpoint','brevoBaseUrl','brevoWebhookSecret','brevoWebhookHeader','vendorManagementUrl','brevoTemplates','authWebApiUrl')) {
+foreach ($k in @('supabaseUrl','supabaseBucket','supabaseRegion','supabaseEndpoint','brevoBaseUrl','brevoWebhookSecret','brevoWebhookHeader','vendorManagementUrl','authWebApiUrl')) {
     if ($null -ne $cfg.parameters.$k) { $all[$k] = $cfg.parameters.$k.value }
 }
 foreach ($p in $secrets.PSObject.Properties) { $all[$p.Name] = $p.Value }

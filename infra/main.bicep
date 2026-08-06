@@ -35,16 +35,6 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
-  properties: {
-    workloadProfiles: [
-      {
-        name: 'Consumption'
-        workloadProfileType: 'Consumption'
-        minimumNodeCount: 0
-        maximumNodeCount: 0
-      }
-    ]
-  }
 }
 
 output acrLoginServer string = acr.properties.loginServer
