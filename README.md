@@ -65,8 +65,9 @@ Front door URL after deploy:
    .\scripts\deploy.ps1
    ```
 
-The script creates the RG, ACR + environment, builds & pushes all 8 images with
-`az acr build` (no local Docker needed), deploys the 14 apps, and prints the
+The script creates the RG, ACR + environment, scaffolds the 14 apps with secrets,
+then builds & pushes the 8 images with `az acr build` (using the real auth-proxy
+FQDN for the SERMS web bundle), rolls each app onto its image, and prints the
 front-door URL.
 
 ## Validate Bicep (before pushing)
