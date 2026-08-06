@@ -1,0 +1,11 @@
+# Local secrets & transient files — never commit
+secrets.prod.json
+*.deploy.log
+.az/
+.terraform/
+*.bicep.lock.local
+
+# OS / editor noise
+Thumbs.db
+.vscode/
+.idea/

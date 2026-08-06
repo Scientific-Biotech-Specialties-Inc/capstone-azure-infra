@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "eastus" },
+    "environmentName": { "value": "capstone-env" },
+    "acrName": { "value": "capstoneacr0001" },
+    "imageTag": { "value": "latest" },
+    "minReplicas": { "value": 1 },
+    "supabaseUrl": { "value": "" },
+    "supabaseBucket": { "value": "" },
+    "supabaseRegion": { "value": "" },
+    "supabaseEndpoint": { "value": "" },
+    "brevoBaseUrl": { "value": "https://api.brevo.com/v3" },
+    "brevoWebhookSecret": { "value": "" },
+    "brevoWebhookHeader": { "value": "X-Brevo-Webhook-Secret" },
+    "vendorManagementUrl": { "value": "" },
+    "brevoTemplates": { "value": "{}" },
+    "authWebApiUrl": { "value": "http://auth-api" }
+  }
+}
