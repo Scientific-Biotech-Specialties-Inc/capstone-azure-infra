@@ -91,7 +91,9 @@ $all["minReplicas"]     = $MinReplicas
 foreach ($k in @('supabaseUrl','supabaseBucket','supabaseRegion','supabaseEndpoint','brevoBaseUrl','brevoWebhookSecret','brevoWebhookHeader','vendorManagementUrl','authWebApiUrl')) {
     if ($null -ne $cfg.parameters.$k) { $all[$k] = $cfg.parameters.$k.value }
 }
-foreach ($p in $secrets.PSObject.Properties) { $all[$p.Name] = $p.Value }
+foreach ($p in $secrets.PSObject.Properties) {
+    if (-not $p.Name.StartsWith('//')) { $all[$p.Name] = $p.Value }
+}
 
 $inner = @{}
 foreach ($k in $all.Keys) { $inner[$k] = @{ value = $all[$k] } }
