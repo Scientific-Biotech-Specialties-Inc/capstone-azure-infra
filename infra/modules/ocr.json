@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "15513477259398573730"
+      "templateHash": "4299882730512713282"
     }
   },
   "parameters": {
@@ -101,15 +101,24 @@
             "targetPort": 11434,
             "transport": "http",
             "allowInsecure": true
-          },
-          "registries": "[variables('registryConfig')]",
-          "secrets": "[variables('registrySecret')]"
+          }
         },
         "template": {
           "containers": [
             {
               "name": "ocr-ollama",
-              "image": "[parameters('ocrOllamaImage')]",
+              "image": "[if(not(empty(parameters('ocrOllamaImage'))), parameters('ocrOllamaImage'), 'docker.io/ollama/ollama:latest')]",
+              "command": [
+                "/bin/sh",
+                "-c",
+                "/bin/ollama serve & pid=$!; while ! ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull qwen2.5:1.5b; wait $pid"
+              ],
+              "env": [
+                {
+                  "name": "OLLAMA_HOST",
+                  "value": "0.0.0.0"
+                }
+              ],
               "resources": {
                 "cpu": "[json('1.0')]",
                 "memory": "2.0Gi"
@@ -143,7 +152,7 @@
         "configuration": {
           "activeRevisionsMode": "Single",
           "ingress": {
-            "external": true,
+            "external": false,
             "targetPort": 8010,
             "transport": "http",
             "allowInsecure": true
@@ -179,7 +188,7 @@
                 },
                 {
                   "name": "OLLAMA_BASE_URL",
-                  "value": "[format('http://{0}', reference(resourceId('Microsoft.App/containerApps', 'ocr-ollama'), '2024-03-01').configuration.ingress.fqdn)]"
+                  "value": "http://ocr-ollama:11434"
                 },
                 {
                   "name": "OLLAMA_MODEL",
@@ -223,10 +232,7 @@
             ]
           }
         }
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.App/containerApps', 'ocr-ollama')]"
-      ]
+      }
     },
     {
       "type": "Microsoft.App/containerApps",
@@ -277,7 +283,7 @@
                 },
                 {
                   "name": "OLLAMA_BASE_URL",
-                  "value": "[format('http://{0}', reference(resourceId('Microsoft.App/containerApps', 'ocr-ollama'), '2024-03-01').configuration.ingress.fqdn)]"
+                  "value": "http://ocr-ollama:11434"
                 },
                 {
                   "name": "OLLAMA_MODEL",
@@ -328,10 +334,7 @@
             ]
           }
         }
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.App/containerApps', 'ocr-ollama')]"
-      ]
+      }
     }
   ],
   "outputs": {

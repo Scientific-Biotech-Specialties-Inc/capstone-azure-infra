@@ -28,6 +28,7 @@ param(
     [switch]$SwitchAccount,
     [switch]$UseDeviceCode,
     [switch]$SyncProxy,
+    [switch]$SkipBuild,
     [switch]$DryRun,
 
     [string]$ConfigFile = "",
@@ -102,11 +103,23 @@ $secrets = Get-Content -Raw $SecretsFile | ConvertFrom-Json
 
 # Derive default variables from config if not passed as CLI args
 if ([string]::IsNullOrWhiteSpace($Resource))        { $Resource = if ($cfg.resourceGroup) { $cfg.resourceGroup } else { "rg-capstone" } }
-if ([string]::IsNullOrWhiteSpace($Location))        { $Location = if ($cfg.location) { $cfg.location } else { "eastus" } }
+if ([string]::IsNullOrWhiteSpace($Location))        { $Location = if ($cfg.location) { $cfg.location } else { "eastasia" } }
 if ([string]::IsNullOrWhiteSpace($EnvironmentName)) { $EnvironmentName = if ($cfg.environmentName) { $cfg.environmentName } else { "capstone-env" } }
 if ([string]::IsNullOrWhiteSpace($ImageTag))        { $ImageTag = if ($cfg.registry.imageTag) { $cfg.registry.imageTag } else { "latest" } }
 if ($MinReplicas -lt 0) {
     $MinReplicas = if ($ScaleMode -eq "WarmDemo") { 1 } else { 0 }
+}
+
+# Auto-detect allowed regions from Azure Policy if restricted by student subscription
+$policyLocations = az policy assignment list --query "[?name=='sys.regionrestriction'].parameters.listOfAllowedLocations.value[]" -o json 2>$null | ConvertFrom-Json
+if ($policyLocations -and $policyLocations.Count -gt 0) {
+    if ($policyLocations -notcontains $Location) {
+        $preferred = @("eastasia", "southeastasia", "japaneast", "australiaeast", "centralindia", "malaysiawest")
+        $matched = $preferred | Where-Object { $policyLocations -contains $_ } | Select-Object -First 1
+        $chosen = if ($matched) { $matched } else { $policyLocations[0] }
+        Write-Host "Notice: Subscription policy restricts regions. Adjusting location from '$Location' to '$chosen'." -ForegroundColor Yellow
+        $Location = $chosen
+    }
 }
 
 # Auto-register Azure resource providers if not registered
@@ -184,20 +197,78 @@ $coreDeploy = az deployment group create `
     --resource-group $Resource `
     --name "capstone-core-infra" `
     --template-file (Join-Path $InfraRoot "infra\main.bicep") `
-    --parameters location=$Location environmentName=$EnvironmentName deployAcr=$deployAcr deployStorage=$true `
+    --parameters location=$Location environmentName=$EnvironmentName deployAcr=$deployAcr `
     --query "properties.outputs" -o json | ConvertFrom-Json
 
 if ($LASTEXITCODE -ne 0) { throw "Core infra deployment failed." }
 
 $acrName = if ($coreDeploy.acrName) { $coreDeploy.acrName.value } else { "" }
-$regServer = if ($RegistryMode -eq "ghcr") { $cfg.registry.ghcrOrg } else { "$acrName.azurecr.io" }
-$regUser = if ($RegistryMode -eq "ghcr") { if ($secrets.ghcrUsername) { $secrets.ghcrUsername } else { "" } } else { "" }
-$regPass = if ($RegistryMode -eq "ghcr") { if ($secrets.ghcrToken) { $secrets.ghcrToken } else { "" } } else { "" }
+if ($RegistryMode -eq "acr") {
+    $regServer = "$acrName.azurecr.io"
+    $regUser   = (az acr credential show --name $acrName --query "username" -o tsv)
+    $regPass   = (az acr credential show --name $acrName --query "passwords[0].value" -o tsv)
+
+    if ($SkipBuild) {
+        Write-Host "`n[2/4] -SkipBuild passed. Reusing existing images in $regServer." -ForegroundColor Green
+    } else {
+        Write-Host "`n[2/4] Building & pushing container images locally to $regServer..." -ForegroundColor Yellow
+        if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+            throw "Docker Desktop not found or not running. Please start Docker Desktop to use ACR build mode."
+        }
+        az acr login --name $acrName
+        if ($LASTEXITCODE -ne 0) { throw "az acr login failed." }
+
+        $authProxyFqdn = "auth-proxy.$EnvironmentName.$Location.azurecontainerapps.io"
+        $builds = @()
+        if ($deployStores) {
+            $builds += @{ Name = "$regServer/mysql-init:$ImageTag"; Ctx = (Join-Path $InfraRoot "containers\mysql"); Dockerfile = "Dockerfile"; Args = @() }
+        }
+        if ($deploySerms) {
+            $builds += @(
+                @{ Name = "$regServer/serms-api:$ImageTag"; Ctx = "$RepoRoot\smart-expense-management-system\apps\api"; Dockerfile = "Dockerfile"; Args = @() },
+                @{ Name = "$regServer/serms-web:$ImageTag"; Ctx = "$RepoRoot\smart-expense-management-system\apps\web"; Dockerfile = "Dockerfile.prod"; Args = @("VITE_AUTH_MODULE_URL=/", "VITE_API_BASE_URL=") }
+            )
+        }
+        if ($deployAuth) {
+            $builds += @(
+                @{ Name = "$regServer/auth-api:$ImageTag";   Ctx = "$RepoRoot\capstone-auth-module\auth-service";   Dockerfile = "Dockerfile";          Args = @() },
+                @{ Name = "$regServer/auth-web:$ImageTag";   Ctx = "$RepoRoot\capstone-auth-module\web-interface";  Dockerfile = "Dockerfile";          Args = @() },
+                @{ Name = "$regServer/auth-proxy:$ImageTag"; Ctx = "$RepoRoot\capstone-auth-module";               Dockerfile = "deploy\nginx.Dockerfile"; Args = @() }
+            )
+        }
+        if ($deployOcr) {
+            $builds += @(
+                @{ Name = "$regServer/ocr-api:$ImageTag"; Ctx = "$RepoRoot\ocr-pipeline"; Dockerfile = "Dockerfile"; Args = @() }
+            )
+        }
+
+        $n = 0
+        foreach ($b in $builds) {
+            $n++
+            Write-Host "  ($n/$($builds.Count)) docker build $($b.Dockerfile) -> $($b.Name)" -ForegroundColor Yellow
+            $df = Join-Path $b.Ctx $b.Dockerfile
+            $bargs = @("build", "-f", $df, "-t", $b.Name)
+            foreach ($a in $b.Args) { $bargs += @("--build-arg", $a) }
+            $bargs += $b.Ctx
+            docker @bargs
+            if ($LASTEXITCODE -ne 0) { throw "Docker build failed for $($b.Name)" }
+
+            Write-Host "  pushing $($b.Name)..." -ForegroundColor DarkGray
+            docker push $b.Name
+            if ($LASTEXITCODE -ne 0) { throw "Docker push failed for $($b.Name)" }
+        }
+    }
+} else {
+    $regServer = $cfg.registry.ghcrOrg
+    $regUser   = if ($secrets.ghcrUsername) { $secrets.ghcrUsername } else { "" }
+    $regPass   = if ($secrets.ghcrToken) { $secrets.ghcrToken } else { "" }
+    Write-Host "`n[2/4] Pulling pre-built images from $regServer (zero build time, zero local upload)." -ForegroundColor Green
+}
 
 # --------------------------------------------------------------------------
 # 3. Deploy Container Apps (apps.bicep)
 # --------------------------------------------------------------------------
-Write-Host "`n[2/4] Deploying Container Apps (Module: $($Module -join ',')) with minReplicas=$MinReplicas..." -ForegroundColor Green
+Write-Host "`n[3/4] Deploying Container Apps (Module: $($Module -join ',')) with minReplicas=$MinReplicas..." -ForegroundColor Green
 
 $allParams = [ordered]@{}
 $allParams["location"]        = $Location
@@ -263,21 +334,6 @@ $appsDeploy = az deployment group create `
 
 if ($LASTEXITCODE -ne 0) { throw "Container apps deployment failed." }
 
-# --------------------------------------------------------------------------
-# 4. Local Build & Push (Only if RegistryMode is ACR)
-# --------------------------------------------------------------------------
-if ($RegistryMode -eq "acr") {
-    Write-Host "`n[3/4] Building & pushing images locally to $acrName.azurecr.io..." -ForegroundColor Yellow
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        throw "Docker Desktop required for ACR local build mode."
-    }
-    az acr login --name $acrName
-
-    # Build and roll apps onto freshly pushed images
-    # ...
-} else {
-    Write-Host "`n[3/4] Pulled pre-built images from $regServer (zero build time, zero local upload)." -ForegroundColor Green
-}
 
 # --------------------------------------------------------------------------
 # 5. Extract FQDNs & Update Subgroups Registry
@@ -293,22 +349,34 @@ if ($deployAuth -and $appsDeploy.authProxyFqdn) {
 if ($deploySerms -and $appsDeploy.sermsWebFqdn) {
     $fqdns["sermsWeb"] = "http://$($appsDeploy.sermsWebFqdn.value)"
     $fqdns["sermsApi"] = "http://$($appsDeploy.sermsApiFqdn.value)"
-    $cfg.subgroups.serms.webUrl = $fqdns["sermsWeb"]
-    $cfg.subgroups.serms.apiUrl = $fqdns["sermsApi"]
+    if (-not $cfg.subgroups.PSObject.Properties['serms']) {
+        $cfg.subgroups | Add-Member -NotePropertyName 'serms' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    $cfg.subgroups.serms | Add-Member -NotePropertyName 'webUrl' -NotePropertyValue $fqdns["sermsWeb"] -Force
+    $cfg.subgroups.serms | Add-Member -NotePropertyName 'apiUrl' -NotePropertyValue $fqdns["sermsApi"] -Force
 }
 if ($deployPrs -and $appsDeploy.prsWebFqdn) {
     $fqdns["prsWeb"] = "http://$($appsDeploy.prsWebFqdn.value)"
     $fqdns["prsApi"] = "http://$($appsDeploy.prsApiFqdn.value)"
-    $cfg.subgroups.prs.webUrl = $fqdns["prsWeb"]
-    $cfg.subgroups.prs.apiUrl = $fqdns["prsApi"]
+    if (-not $cfg.subgroups.PSObject.Properties['prs']) {
+        $cfg.subgroups | Add-Member -NotePropertyName 'prs' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    $cfg.subgroups.prs | Add-Member -NotePropertyName 'webUrl' -NotePropertyValue $fqdns["prsWeb"] -Force
+    $cfg.subgroups.prs | Add-Member -NotePropertyName 'apiUrl' -NotePropertyValue $fqdns["prsApi"] -Force
 }
 if ($deployCms -and $appsDeploy.cmsWebFqdn) {
     $fqdns["cmsWeb"] = "http://$($appsDeploy.cmsWebFqdn.value)"
-    $cfg.subgroups.cms.webUrl = $fqdns["cmsWeb"]
+    if (-not $cfg.subgroups.PSObject.Properties['cms']) {
+        $cfg.subgroups | Add-Member -NotePropertyName 'cms' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'webUrl' -NotePropertyValue $fqdns["cmsWeb"] -Force
 }
 if ($deployTicketing -and $appsDeploy.ticketingWebFqdn) {
     $fqdns["ticketingWeb"] = "http://$($appsDeploy.ticketingWebFqdn.value)"
-    $cfg.subgroups.ticketing.webUrl = $fqdns["ticketingWeb"]
+    if (-not $cfg.subgroups.PSObject.Properties['ticketing']) {
+        $cfg.subgroups | Add-Member -NotePropertyName 'ticketing' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    $cfg.subgroups.ticketing | Add-Member -NotePropertyName 'webUrl' -NotePropertyValue $fqdns["ticketingWeb"] -Force
 }
 
 # Save updated config

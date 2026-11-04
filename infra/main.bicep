@@ -2,14 +2,14 @@
 //
 // Deploys the shared building blocks that everything else depends on:
 //  1. Azure Container Registry (ACR) [Optional/Default]
-//  2. Container Apps Managed Environment + Log Analytics
-//  3. Azure Storage Account + Azure Files Share for persistent DB backups/mounts [Optional/Default]
+//  2. Virtual Network & Delegated Subnet for TCP Ingress & ACA
+//  3. Container Apps Managed Environment + Log Analytics
 //
-// Zero-edit account switching: acrName and storageAccountName auto-generate using
+// Zero-edit account switching: acrName auto-generates using
 // uniqueString(subscription().subscriptionId, resourceGroup().id).
 
 @description('Azure region for all resources.')
-param location string = 'eastus'
+param location string = 'eastasia'
 
 @description('Name of the Container Apps Managed Environment. Becomes part of every app FQDN: <app>.<env>.<region>.azurecontainerapps.io')
 param environmentName string = 'capstone-env'
@@ -19,12 +19,6 @@ param deployAcr bool = true
 
 @description('Globally unique name for the Azure Container Registry. Defaults to deterministic hash per subscription and RG.')
 param acrName string = 'capacr${uniqueString(subscription().subscriptionId, resourceGroup().id)}'
-
-@description('Deploy Azure Files Storage for persistent database state across restarts.')
-param deployStorage bool = true
-
-@description('Globally unique name for the Storage Account. Defaults to deterministic hash per subscription and RG.')
-param storageAccountName string = 'capst${uniqueString(subscription().subscriptionId, resourceGroup().id)}'
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (deployAcr) {
   name: acrName
@@ -48,6 +42,34 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   }
 }
 
+resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
+  name: 'capstone-vnet'
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        '10.0.0.0/16'
+      ]
+    }
+    subnets: [
+      {
+        name: 'infra-subnet'
+        properties: {
+          addressPrefix: '10.0.0.0/23'
+          delegations: [
+            {
+              name: 'Microsoft.App.environments'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
@@ -59,46 +81,16 @@ resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
-  }
-}
-
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = if (deployStorage) {
-  name: storageAccountName
-  location: location
-  sku: {
-    name: 'Standard_LRS'
-  }
-  kind: 'StorageV2'
-  properties: {
-    minimumTlsVersion: 'TLS1_2'
-    supportsHttpsTrafficOnly: true
-    allowSharedKeyAccess: true
-  }
-}
-
-resource fileServices 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = if (deployStorage) {
-  parent: storageAccount
-  name: 'default'
-}
-
-resource dbBackupShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = if (deployStorage) {
-  parent: fileServices
-  name: 'db-backups'
-  properties: {
-    shareQuota: 5
-  }
-}
-
-resource envStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = if (deployStorage) {
-  parent: managedEnvironment
-  name: 'db-backups-storage'
-  properties: {
-    azureFile: {
-      accountName: deployStorage ? storageAccount!.name : ''
-      accountKey: deployStorage ? storageAccount!.listKeys().keys[0].value : ''
-      shareName: deployStorage ? dbBackupShare!.name : ''
-      accessMode: 'ReadWrite'
+    vnetConfiguration: {
+      infrastructureSubnetId: vnet.properties.subnets[0].id
+      internal: false
     }
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
   }
 }
 
@@ -106,6 +98,3 @@ output acrLoginServer string = deployAcr ? acr!.properties.loginServer : ''
 output managedEnvironmentId string = managedEnvironment.id
 output acrName string = deployAcr ? acr!.name : ''
 output environmentName string = managedEnvironment.name
-output storageAccountName string = deployStorage ? storageAccount!.name : ''
-output storageShareName string = deployStorage ? dbBackupShare!.name : ''
-output envStorageName string = deployStorage ? envStorage!.name : ''
