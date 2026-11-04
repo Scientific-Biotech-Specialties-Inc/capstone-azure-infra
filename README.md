@@ -4,6 +4,10 @@ Infrastructure as Code for deploying the capstone microservices and subgroup sys
 
 ```text
 README.md                             root
+├── AGENTS.md                         AI agent rulebook, axioms, and subagent directives
+├── docs/
+│   ├── SUBGROUP_DEVELOPER_GUIDE.md   step-by-step developer guide for PRS, CMS, TS, SERMS
+│   └── ACCOUNT_ROTATION_RUNBOOK.md   runbook for rotating $100 student accounts
 ├── config/
 │   └── deploy.config.json            central non-secret deployment config & subgroup URLs
 ├── infra/
@@ -26,6 +30,14 @@ README.md                             root
     ├── deploy-infra.yml              modular GitHub Actions deployment workflow
     └── publish-ghcr.yml              reusable GHCR container build workflow
 ```
+
+---
+
+## 📖 Documentation Hub
+
+- **For AI Subagents & Orchestrators**: Consult [`AGENTS.md`](./AGENTS.md) for non-negotiable axioms, deterministic naming protocols, Bicep validation gates, and subagent role delegation.
+- **For Subgroup Developers (PRS, CMS, Ticketing, SERMS)**: Consult [`docs/SUBGROUP_DEVELOPER_GUIDE.md`](./docs/SUBGROUP_DEVELOPER_GUIDE.md) for container port contracts, shared SSO keys, Mode 1 deployment walkthrough, and front-door synchronization (`-SyncProxy`).
+- **For Account Rotation ($100 Credit Exhaustion)**: Consult [`docs/ACCOUNT_ROTATION_RUNBOOK.md`](./docs/ACCOUNT_ROTATION_RUNBOOK.md) for zero-edit account rotation steps and device-code remote logins.
 
 ---
 
