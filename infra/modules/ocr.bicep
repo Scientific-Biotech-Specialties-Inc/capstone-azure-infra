@@ -61,14 +61,20 @@ resource ollama 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: { external: false, targetPort: 11434, transport: 'http', allowInsecure: true }
-      registries: registryConfig
-      secrets: registrySecret
     }
     template: {
       containers: [
         {
           name: 'ocr-ollama'
-          image: ocrOllamaImage
+          image: !empty(ocrOllamaImage) ? ocrOllamaImage : 'docker.io/ollama/ollama:latest'
+          command: [
+            '/bin/sh'
+            '-c'
+            '/bin/ollama serve & pid=$!; while ! ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull qwen2.5:1.5b; wait $pid'
+          ]
+          env: [
+            { name: 'OLLAMA_HOST', value: '0.0.0.0' }
+          ]
           resources: { cpu: json('1.0'), memory: '2.0Gi' }
         }
       ]
@@ -96,7 +102,7 @@ resource ocrApi 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: managedEnvironmentId
     configuration: {
       activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 8010, transport: 'http', allowInsecure: true }
+      ingress: { external: false, targetPort: 8010, transport: 'http', allowInsecure: true }
       registries: registryConfig
       secrets: concat(registrySecret, [
         { name: 'serms-api-key', value: sermsApiKey }
@@ -116,7 +122,7 @@ resource ocrApi 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'SERMS_API_KEY', secretRef: 'serms-api-key' }
             { name: 'PRS_API_KEY', secretRef: 'prs-api-key' }
             { name: 'CALLBACK_API_KEY', secretRef: 'callback-api-key' }
-            { name: 'OLLAMA_BASE_URL', value: 'http://${ollama.properties.configuration.ingress.fqdn}' }
+            { name: 'OLLAMA_BASE_URL', value: 'http://ocr-ollama:11434' }
             { name: 'OLLAMA_MODEL', value: 'qwen2.5:1.5b' }
             { name: 'REDIS_URL', value: 'redis://${redisHost}:${redisPort}/0' }
             { name: 'MONGODB_URL', value: 'mongodb://${mongoHost}:${mongoPort}' }
@@ -171,7 +177,7 @@ resource ocrWorker 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'SERMS_API_KEY', secretRef: 'serms-api-key' }
             { name: 'PRS_API_KEY', secretRef: 'prs-api-key' }
             { name: 'CALLBACK_API_KEY', secretRef: 'callback-api-key' }
-            { name: 'OLLAMA_BASE_URL', value: 'http://${ollama.properties.configuration.ingress.fqdn}' }
+            { name: 'OLLAMA_BASE_URL', value: 'http://ocr-ollama:11434' }
             { name: 'OLLAMA_MODEL', value: 'qwen2.5:1.5b' }
             { name: 'REDIS_URL', value: 'redis://${redisHost}:${redisPort}/0' }
             { name: 'MONGODB_URL', value: 'mongodb://${mongoHost}:${mongoPort}' }

@@ -124,6 +124,9 @@ module stores 'modules/stores.bicep' = if (deployStores) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: 1 // Data stores keep 1 replica while active to retain in-memory state
+    registryServer: registryServer
+    registryUser: registryUser
+    registryPassword: registryPassword
     mysqlRootPassword: mysqlRootPassword
     postgresPassword: postgresPassword
     mysqlImage: '${imgPrefix}mysql-init:${imageTag}'
@@ -157,8 +160,8 @@ module serms 'modules/serms.bicep' = if (deploySerms) {
     supabaseSecretKey: supabaseSecretKey
     mysqlHost: activeMysqlHost
     redisHost: activeRedisHost
-    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
-    aiServiceUrl: 'http://ocr-api.${environmentName}.${location}.azurecontainerapps.io'
+    authServiceUrl: 'http://auth-api'
+    aiServiceUrl: 'http://ocr-api'
     supabaseUrl: supabaseUrl
     supabaseRegion: supabaseRegion
     supabaseBucket: supabaseBucket
@@ -180,7 +183,7 @@ module ocr 'modules/ocr.bicep' = if (deployOcr) {
     registryPassword: registryPassword
     ocrApiImage: '${imgPrefix}ocr-api:${imageTag}'
     ocrWorkerImage: '${imgPrefix}ocr-api:${imageTag}'
-    ocrOllamaImage: '${imgPrefix}ocr-ollama:${imageTag}'
+    ocrOllamaImage: 'docker.io/ollama/ollama:latest'
     sermsApiKey: aiServiceApiKey
     prsApiKey: prsApiKey
     postgresPassword: postgresPassword
@@ -209,8 +212,8 @@ module prs 'modules/prs.bicep' = if (deployPrs) {
     prsApiKey: prsApiKey
     mysqlHost: activeMysqlHost
     redisHost: activeRedisHost
-    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
-    ocrServiceUrl: 'http://ocr-api.${environmentName}.${location}.azurecontainerapps.io'
+    authServiceUrl: 'http://auth-api'
+    ocrServiceUrl: 'http://ocr-api'
   }
 }
 
@@ -233,7 +236,7 @@ module cms 'modules/cms.bicep' = if (deployCms) {
     internalEncryptionKey: internalEncryptionKey
     mysqlHost: activeMysqlHost
     redisHost: activeRedisHost
-    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
+    authServiceUrl: 'http://auth-api'
   }
 }
 
@@ -255,7 +258,7 @@ module ticketing 'modules/ticketing.bicep' = if (deployTicketing) {
     jwtSecret: jwtSecret
     mysqlHost: activeMysqlHost
     redisHost: activeRedisHost
-    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
+    authServiceUrl: 'http://auth-api'
   }
 }
 

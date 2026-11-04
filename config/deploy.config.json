@@ -1,56 +1,61 @@
-{
-  "location": "eastus",
-  "resourceGroup": "rg-capstone",
-  "environmentName": "capstone-env",
-  "registry": {
-    "mode": "ghcr",
-    "ghcrOrg": "ghcr.io/scientific-biotech-specialties-inc",
-    "imageTag": "latest"
-  },
-  "scaling": {
-    "defaultMode": "Serverless",
-    "webApiMinReplicas": 0,
-    "workerMinReplicas": 0,
-    "dbMinReplicas": 1,
-    "ollamaMinReplicas": 0
-  },
-  "modules": {
-    "core": true,
-    "auth": true,
-    "serms": true,
-    "ocr": true,
-    "prs": false,
-    "cms": false,
-    "ticketing": false
-  },
-  "subgroups": {
-    "prs": {
-      "mode": "external",
-      "webUrl": "",
-      "apiUrl": ""
-    },
-    "cms": {
-      "mode": "external",
-      "webUrl": "",
-      "vendorUrl": "",
-      "contractUrl": "",
-      "searchUrl": "",
-      "notificationUrl": "",
-      "aiUrl": "",
-      "analyticsUrl": ""
-    },
-    "ticketing": {
-      "mode": "external",
-      "webUrl": "",
-      "gatewayUrl": ""
-    }
-  },
-  "externalServices": {
-    "supabaseUrl": "https://vbabvrcfqcmvvjwmzuwx.supabase.co",
-    "supabaseBucket": "cash_advances",
-    "supabaseRegion": "ap-southeast-1",
-    "supabaseEndpoint": "https://vbabvrcfqcmvvjwmzuwx.storage.supabase.co/storage/v1/s3",
-    "brevoBaseUrl": "https://api.brevo.com/v3",
-    "brevoWebhookHeader": "X-Brevo-Webhook-Secret"
-  }
+﻿{
+    "location":  "eastasia",
+    "resourceGroup":  "rg-capstone",
+    "environmentName":  "capstone-env",
+    "registry":  {
+                     "mode":  "ghcr",
+                     "ghcrOrg":  "ghcr.io/scientific-biotech-specialties-inc",
+                     "imageTag":  "latest"
+                 },
+    "scaling":  {
+                    "defaultMode":  "Serverless",
+                    "webApiMinReplicas":  0,
+                    "workerMinReplicas":  0,
+                    "dbMinReplicas":  1,
+                    "ollamaMinReplicas":  0
+                },
+    "modules":  {
+                    "core":  true,
+                    "auth":  true,
+                    "serms":  true,
+                    "ocr":  true,
+                    "prs":  false,
+                    "cms":  false,
+                    "ticketing":  false
+                },
+    "subgroups":  {
+                      "serms":  {
+                                    "mode":  "internal",
+                                    "webUrl":  "http://serms-web.ashyisland-db3cde0b.eastasia.azurecontainerapps.io",
+                                    "apiUrl":  "http://serms-api.ashyisland-db3cde0b.eastasia.azurecontainerapps.io"
+                                },
+                      "prs":  {
+                                  "mode":  "external",
+                                  "webUrl":  "",
+                                  "apiUrl":  ""
+                              },
+                      "cms":  {
+                                  "mode":  "external",
+                                  "webUrl":  "",
+                                  "vendorUrl":  "",
+                                  "contractUrl":  "",
+                                  "searchUrl":  "",
+                                  "notificationUrl":  "",
+                                  "aiUrl":  "",
+                                  "analyticsUrl":  ""
+                              },
+                      "ticketing":  {
+                                        "mode":  "external",
+                                        "webUrl":  "",
+                                        "gatewayUrl":  ""
+                                    }
+                  },
+    "externalServices":  {
+                             "supabaseUrl":  "https://vbabvrcfqcmvvjwmzuwx.supabase.co",
+                             "supabaseBucket":  "cash_advances",
+                             "supabaseRegion":  "ap-southeast-1",
+                             "supabaseEndpoint":  "https://vbabvrcfqcmvvjwmzuwx.storage.supabase.co/storage/v1/s3",
+                             "brevoBaseUrl":  "https://api.brevo.com/v3",
+                             "brevoWebhookHeader":  "X-Brevo-Webhook-Secret"
+                         }
 }

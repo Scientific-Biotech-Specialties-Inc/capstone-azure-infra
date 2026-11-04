@@ -15,28 +15,27 @@ param mysqlRootPassword string
 @secure()
 param postgresPassword string
 
+param registryServer string = ''
+param registryUser string = ''
+@secure()
+param registryPassword string = ''
+
+var hasRegistry = !empty(registryServer) && !empty(registryUser)
+var registryConfig = hasRegistry ? [
+  {
+    server: registryServer
+    username: registryUser
+    passwordSecretRef: 'reg-pass'
+  }
+] : []
+var registrySecret = hasRegistry ? [
+  { name: 'reg-pass', value: registryPassword }
+] : []
+
 param mysqlImage string = 'docker.io/library/mysql:8.0'
 param redisImage string = 'docker.io/library/redis:7-alpine'
 param postgresImage string = 'docker.io/pgvector/pgvector:pg16'
 param mongoImage string = 'docker.io/library/mongo:7'
-
-param storageEnabled bool = true
-param storageName string = 'db-backups-storage'
-
-var volumeConfig = storageEnabled ? [
-  {
-    name: 'backup-vol'
-    storageType: 'AzureFile'
-    storageName: storageName
-  }
-] : []
-
-var volumeMountsConfig = storageEnabled ? [
-  {
-    volumeName: 'backup-vol'
-    mountPath: '/backups'
-  }
-] : []
 
 // ---------------------------------------------------------------------------
 // Shared MySQL
@@ -49,12 +48,12 @@ resource mysqlDb 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: { external: false, targetPort: 3306, transport: 'tcp', exposedPort: 3306 }
-      secrets: [
+      registries: registryConfig
+      secrets: concat([
         { name: 'root-password', value: mysqlRootPassword }
-      ]
+      ], registrySecret)
     }
     template: {
-      volumes: volumeConfig
       containers: [
         {
           name: 'shared-mysql'
@@ -66,7 +65,6 @@ resource mysqlDb 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'MYSQL_USER', value: 'serms_user' }
             { name: 'MYSQL_PASSWORD', secretRef: 'root-password' }
           ]
-          volumeMounts: volumeMountsConfig
         }
       ]
       scale: { minReplicas: minReplicas, maxReplicas: 1 }
@@ -87,13 +85,11 @@ resource redis 'Microsoft.App/containerApps@2024-03-01' = {
       ingress: { external: false, targetPort: 6379, transport: 'tcp', exposedPort: 6379 }
     }
     template: {
-      volumes: volumeConfig
       containers: [
         {
           name: 'shared-redis'
           image: redisImage
           resources: { cpu: json('0.25'), memory: '0.5Gi' }
-          volumeMounts: volumeMountsConfig
         }
       ]
       scale: { minReplicas: minReplicas, maxReplicas: 1 }
@@ -117,7 +113,6 @@ resource postgres 'Microsoft.App/containerApps@2024-03-01' = {
       ]
     }
     template: {
-      volumes: volumeConfig
       containers: [
         {
           name: 'shared-postgres'
@@ -128,7 +123,6 @@ resource postgres 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'POSTGRES_PASSWORD', secretRef: 'pg-password' }
             { name: 'POSTGRES_DB', value: 'ocr_pipeline' }
           ]
-          volumeMounts: volumeMountsConfig
         }
       ]
       scale: { minReplicas: minReplicas, maxReplicas: 1 }
@@ -149,13 +143,11 @@ resource mongo 'Microsoft.App/containerApps@2024-03-01' = {
       ingress: { transport: 'tcp', targetPort: 27017, exposedPort: 27017, external: false }
     }
     template: {
-      volumes: volumeConfig
       containers: [
         {
           name: 'shared-mongo'
           image: mongoImage
           resources: { cpu: json('0.5'), memory: '1.0Gi' }
-          volumeMounts: volumeMountsConfig
         }
       ]
       scale: { minReplicas: minReplicas, maxReplicas: 1 }
@@ -163,7 +155,7 @@ resource mongo 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
-output mysqlFqdn string = mysqlDb.properties.configuration.ingress.fqdn
-output redisFqdn string = redis.properties.configuration.ingress.fqdn
-output postgresFqdn string = postgres.properties.configuration.ingress.fqdn
-output mongoFqdn string = mongo.properties.configuration.ingress.fqdn
+output mysqlFqdn string = 'shared-mysql'
+output redisFqdn string = 'shared-redis'
+output postgresFqdn string = 'shared-postgres'
+output mongoFqdn string = 'shared-mongo'

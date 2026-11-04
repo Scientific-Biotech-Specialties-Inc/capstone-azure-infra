@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "18370978432320197141"
+      "templateHash": "487640688731024613"
     }
   },
   "parameters": {
@@ -34,6 +34,18 @@
     "postgresPassword": {
       "type": "securestring"
     },
+    "registryServer": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryUser": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
     "mysqlImage": {
       "type": "string",
       "defaultValue": "docker.io/library/mysql:8.0"
@@ -49,19 +61,12 @@
     "mongoImage": {
       "type": "string",
       "defaultValue": "docker.io/library/mongo:7"
-    },
-    "storageEnabled": {
-      "type": "bool",
-      "defaultValue": true
-    },
-    "storageName": {
-      "type": "string",
-      "defaultValue": "db-backups-storage"
     }
   },
   "variables": {
-    "volumeConfig": "[if(parameters('storageEnabled'), createArray(createObject('name', 'backup-vol', 'storageType', 'AzureFile', 'storageName', parameters('storageName'))), createArray())]",
-    "volumeMountsConfig": "[if(parameters('storageEnabled'), createArray(createObject('volumeName', 'backup-vol', 'mountPath', '/backups')), createArray())]"
+    "hasRegistry": "[and(not(empty(parameters('registryServer'))), not(empty(parameters('registryUser'))))]",
+    "registryConfig": "[if(variables('hasRegistry'), createArray(createObject('server', parameters('registryServer'), 'username', parameters('registryUser'), 'passwordSecretRef', 'reg-pass')), createArray())]",
+    "registrySecret": "[if(variables('hasRegistry'), createArray(createObject('name', 'reg-pass', 'value', parameters('registryPassword'))), createArray())]"
   },
   "resources": [
     {
@@ -79,15 +84,10 @@
             "transport": "tcp",
             "exposedPort": 3306
           },
-          "secrets": [
-            {
-              "name": "root-password",
-              "value": "[parameters('mysqlRootPassword')]"
-            }
-          ]
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[concat(createArray(createObject('name', 'root-password', 'value', parameters('mysqlRootPassword'))), variables('registrySecret'))]"
         },
         "template": {
-          "volumes": "[variables('volumeConfig')]",
           "containers": [
             {
               "name": "shared-mysql",
@@ -113,8 +113,7 @@
                   "name": "MYSQL_PASSWORD",
                   "secretRef": "root-password"
                 }
-              ],
-              "volumeMounts": "[variables('volumeMountsConfig')]"
+              ]
             }
           ],
           "scale": {
@@ -141,7 +140,6 @@
           }
         },
         "template": {
-          "volumes": "[variables('volumeConfig')]",
           "containers": [
             {
               "name": "shared-redis",
@@ -149,8 +147,7 @@
               "resources": {
                 "cpu": "[json('0.25')]",
                 "memory": "0.5Gi"
-              },
-              "volumeMounts": "[variables('volumeMountsConfig')]"
+              }
             }
           ],
           "scale": {
@@ -183,7 +180,6 @@
           ]
         },
         "template": {
-          "volumes": "[variables('volumeConfig')]",
           "containers": [
             {
               "name": "shared-postgres",
@@ -205,8 +201,7 @@
                   "name": "POSTGRES_DB",
                   "value": "ocr_pipeline"
                 }
-              ],
-              "volumeMounts": "[variables('volumeMountsConfig')]"
+              ]
             }
           ],
           "scale": {
@@ -233,7 +228,6 @@
           }
         },
         "template": {
-          "volumes": "[variables('volumeConfig')]",
           "containers": [
             {
               "name": "shared-mongo",
@@ -241,8 +235,7 @@
               "resources": {
                 "cpu": "[json('0.5')]",
                 "memory": "1.0Gi"
-              },
-              "volumeMounts": "[variables('volumeMountsConfig')]"
+              }
             }
           ],
           "scale": {

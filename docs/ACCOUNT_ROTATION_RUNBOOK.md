@@ -54,6 +54,10 @@ Deploy the stack to the new subscription in one command:
 ```powershell
 .\scripts\deploy.ps1 -Module core -ScaleMode Serverless
 ```
+> **Tip (ACR Mode Fast Track):** If your images are already built and stored in your Azure Container Registry, append `-SkipBuild` to skip local Docker builds and push:
+> ```powershell
+> .\scripts\deploy.ps1 -Module core -RegistryMode acr -SkipBuild
+> ```
 
 ### What Happens Automatically:
 1. **Resource Provider Registration:** Checks and registers `Microsoft.App`, `Microsoft.ContainerRegistry`, `Microsoft.OperationalInsights`, and `Microsoft.Storage`.
