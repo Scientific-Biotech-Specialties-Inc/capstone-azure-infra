@@ -1,15 +1,4 @@
-// apps.bicep — All 14 container apps + secret wiring.
-//
-// Deploy this AFTER building & pushing images to ACR (see scripts/deploy.ps1).
-// Apps talk to each other over the ACA internal/public FQDNs computed from each
-// sibling Container App's `ingress.fqdn`, replacing the old Docker hostnames
-// (e.g. `serms_api:8000`).
-//
-// Scheduling notes
-// - `scale.minReplicas` defaults to 1 so the presentation is warm and reliable.
-//   For cost control, lower to 0 for idle apps or teardown after the demo.
-// - Data stores use TCP ingress on public endpoints (the free ACA tier has no
-//   private VNet). Radom app names + immediate teardown mitigates exposure.
+// apps.bicep — Modular orchestrator for all capstone microservices & subgroups
 
 @description('Region — must match the Managed Environment region.')
 param location string
@@ -17,17 +6,41 @@ param location string
 @description('Managed Environment name (see main.bicep).')
 param environmentName string
 
-@description('ACR name (see main.bicep).')
-param acrName string
+@description('ACR name (optional if using GHCR).')
+param acrName string = ''
+
+@description('Registry mode: ghcr or acr.')
+param registryMode string = 'ghcr'
+
+@description('GHCR organization or ACR login server.')
+param registryServer string = ''
+
+@description('Registry username (optional for public GHCR, required for private/ACR).')
+param registryUser string = ''
+
+@secure()
+@description('Registry password or GitHub PAT.')
+param registryPassword string = ''
 
 @description('Image tag to deploy. Default latest.')
 param imageTag string = 'latest'
 
-@description('Minimum replicas per app. 1 = always warm, 0 = scale to zero.')
-param minReplicas int = 1
+@description('Minimum replicas for Web/API apps. 0 = serverless scale-to-zero, 1 = warm.')
+param minReplicas int = 0
 
 // ---------------------------------------------------------------------------
-// Secure secrets (passed via CLI / CI, never committed)
+// Module activation flags
+// ---------------------------------------------------------------------------
+param deployStores bool = true
+param deployAuth bool = true
+param deploySerms bool = true
+param deployOcr bool = true
+param deployPrs bool = false
+param deployCms bool = false
+param deployTicketing bool = false
+
+// ---------------------------------------------------------------------------
+// Secure secrets
 // ---------------------------------------------------------------------------
 @secure()
 param mysqlRootPassword string
@@ -38,656 +51,278 @@ param jwtSecret string
 @secure()
 param internalEncryptionKey string
 @secure()
-param sermsAppKey string
+param sermsAppKey string = ''
 @secure()
-param authAppKey string
+param authAppKey string = ''
 @secure()
 param supabaseAccessKey string = ''
 @secure()
 param supabaseSecretKey string = ''
 @secure()
-param aiServiceApiKey string
+param aiServiceApiKey string = ''
 @secure()
 param prsApiKey string = ''
 @secure()
 param brevoApiKey string = ''
 @secure()
 param mailPassword string = ''
+@secure()
+param brevoWebhookSecret string = ''
 
 // ---------------------------------------------------------------------------
-//  Non-secret configuration
+// External / Third-party non-secret configuration
 // ---------------------------------------------------------------------------
 param supabaseUrl string = ''
 param supabaseBucket string = ''
 param supabaseRegion string = ''
 param supabaseEndpoint string = ''
 param brevoBaseUrl string = 'https://api.brevo.com/v3'
-@secure()
-param brevoWebhookSecret string = ''
 param brevoWebhookHeader string = 'X-Brevo-Webhook-Secret'
 param mailFromAddress string = 'noreply@capstone.local'
 param mailFromName string = 'Capstone Auth'
 param vendorManagementUrl string = ''
-param authWebApiUrl string = 'http://localhost:8000'
-param placeholderImage string = 'docker.io/library/nginx:alpine'
 
 // ---------------------------------------------------------------------------
-//  Shared references
+// External subgroup URLs (used when subgroups are deployed on other subscriptions)
 // ---------------------------------------------------------------------------
-var loginServer = '${acrName}.azurecr.io'
-var sermsApiFqdn = 'serms-api.${environmentName}.${location}.azurecontainerapps.io'
+param externalSermsWebUrl string = ''
+param externalSermsApiUrl string = ''
+param externalPrsWebUrl string = ''
+param externalPrsApiUrl string = ''
+param externalCmsWebUrl string = ''
+param externalCmsVendorUrl string = ''
+param externalCmsContractUrl string = ''
+param externalCmsSearchUrl string = ''
+param externalCmsNotificationUrl string = ''
+param externalCmsAiUrl string = ''
+param externalCmsAnalyticsUrl string = ''
+param externalTicketingWebUrl string = ''
+param externalTicketingGatewayUrl string = ''
 
-resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
-  name: acrName
-}
+// External database hosts (used if deploying without local stores)
+param externalMysqlHost string = ''
+param externalRedisHost string = ''
+param externalPostgresHost string = ''
+param externalMongoHost string = ''
 
+// ---------------------------------------------------------------------------
+// Shared references
+// ---------------------------------------------------------------------------
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: environmentName
 }
 
-// ACR admin credentials for pulling images.
-var acrUser = acr.listCredentials().username
-var acrPass = acr.listCredentials().passwords[0].value
+// Compute image prefix
+var imgPrefix = registryMode == 'acr' && !empty(acrName) ? '${acrName}.azurecr.io/' : (!empty(registryServer) ? '${registryServer}/' : '')
 
 // ---------------------------------------------------------------------------
-//  PUBLIC FRONT DOOR — capstone-auth-module reverse proxy
-//  Routes: / -> auth-web, /serms -> serms-web, /api/serms -> serms-api,
-//          /api -> auth-api. PRS/CMS routes return 503 (not deployed here).
+// 1. Data Stores Module (Shared MySQL, Redis, Postgres, MongoDB)
 // ---------------------------------------------------------------------------
-resource authProxy 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'auth-proxy'
-  location: location
-  properties: {
+module stores 'modules/stores.bicep' = if (deployStores) {
+  name: 'stores-deploy'
+  params: {
+    location: location
     managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: {
-        external: true
-        targetPort: 5173
-        transport: 'http'
-        allowInsecure: false
-      }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'auth-proxy'
-          image: placeholderImage
-          resources: { cpu: '0.25', memory: '0.5Gi' }
-          env: [
-            { name: 'AUTH_WEB_URL', value: 'http://${authWeb.properties.configuration.ingress.fqdn}' }
-            { name: 'AUTH_API_URL', value: 'http://${authApi.properties.configuration.ingress.fqdn}' }
-            { name: 'SERMS_WEB_URL', value: 'http://${sermsWeb.properties.configuration.ingress.fqdn}' }
-            { name: 'SERMS_API_URL', value: 'http://${sermsApi.properties.configuration.ingress.fqdn}' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 3 }
-    }
+    minReplicas: 1 // Data stores keep 1 replica while active to retain in-memory state
+    mysqlRootPassword: mysqlRootPassword
+    postgresPassword: postgresPassword
+    mysqlImage: '${imgPrefix}mysql-init:${imageTag}'
   }
 }
 
-// ---------------------------------------------------------------------------
-//  capstone-auth-module
-// ---------------------------------------------------------------------------
-// auth-web: Vue admin UI / login page (served by the proxy at /)
-resource authWeb 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'auth-web'
-  location: location
-  properties: {
-    managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 5000, transport: 'http', allowInsecure: true }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'internal-encryption-key', value: internalEncryptionKey }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'auth-web'
-          image: placeholderImage
-          resources: { cpu: '0.25', memory: '0.5Gi' }
-          env: [
-            { name: 'VITE_API_URL', value: authWebApiUrl }
-            { name: 'VITE_INTERNAL_ENCRYPTION_KEY', secretRef: 'internal-encryption-key' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 2 }
-    }
-  }
-}
+var activeMysqlHost = deployStores ? stores!.outputs.mysqlFqdn : externalMysqlHost
+var activeRedisHost = deployStores ? stores!.outputs.redisFqdn : externalRedisHost
+var activePostgresHost = deployStores ? stores!.outputs.postgresFqdn : externalPostgresHost
+var activeMongoHost = deployStores ? stores!.outputs.mongoFqdn : externalMongoHost
 
-// auth-api: Laravel REST API (artisan serve, entrypoint runs migrations)
-resource authApi 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'auth-api'
-  location: location
-  properties: {
+// ---------------------------------------------------------------------------
+// 2. SERMS Module
+// ---------------------------------------------------------------------------
+module serms 'modules/serms.bicep' = if (deploySerms) {
+  name: 'serms-deploy'
+  params: {
+    location: location
     managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 8000, transport: 'http', allowInsecure: true }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'app-key', value: authAppKey }
-        { name: 'db-password', value: mysqlRootPassword }
-        { name: 'encryption-key', value: internalEncryptionKey }
-        { name: 'internal-secret', value: internalEncryptionKey }
-        { name: 'mail-password', value: mailPassword }
-        { name: 'brevo-key', value: brevoApiKey }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'auth-api'
-          image: placeholderImage
-          resources: { cpu: '0.5', memory: '1.0Gi' }
-          env: [
-            { name: 'APP_ENV', value: 'production' }
-            { name: 'APP_DEBUG', value: 'false' }
-            { name: 'APP_KEY', secretRef: 'app-key' }
-            { name: 'INTERNAL_ENCRYPTION_KEY', secretRef: 'encryption-key' }
-            { name: 'DB_CONNECTION', value: 'mysql' }
-            { name: 'DB_HOST', value: mysqlDb.properties.configuration.ingress.fqdn }
-            { name: 'DB_PORT', value: '3306' }
-            { name: 'DB_DATABASE', value: 'capstone_auth' }
-            { name: 'DB_USERNAME', value: 'root' }
-            { name: 'DB_PASSWORD', secretRef: 'db-password' }
-            { name: 'REDIS_CLIENT', value: 'phpredis' }
-            { name: 'REDIS_HOST', value: redis.properties.configuration.ingress.fqdn }
-            { name: 'REDIS_PORT', value: '6379' }
-            { name: 'REDIS_PASSWORD', value: '' }
-            { name: 'CACHE_STORE', value: 'redis' }
-            { name: 'QUEUE_CONNECTION', value: 'redis' }
-            { name: 'INTERNAL_SERVICE_SECRET', secretRef: 'internal-secret' }
-            { name: 'VENDOR_MANAGEMENT_URL', value: vendorManagementUrl }
-            { name: 'MAIL_MAILER', value: 'log' }
-            { name: 'MAIL_FROM_ADDRESS', value: mailFromAddress }
-            { name: 'MAIL_FROM_NAME', value: mailFromName }
-            { name: 'EMAIL_NOTIFICATIONS_PROVIDER', value: 'log' }
-            { name: 'BREVO_BASE_URL', value: brevoBaseUrl }
-            { name: 'BREVO_API_KEY', secretRef: 'brevo-key' }
-            { name: 'BREVO_WEBHOOK_SECRET', value: brevoWebhookSecret }
-            { name: 'BREVO_WEBHOOK_SECRET_HEADER', value: brevoWebhookHeader }
-            { name: 'BREVO_TEMPLATE_WELCOME_TEMP_PASSWORD', value: '' }
-            { name: 'BREVO_TEMPLATE_PASSWORD_RESET', value: 'free' }
-            { name: 'BREVO_TEMPLATE_EMAIL_VERIFICATION', value: '' }
-            { name: 'BREVO_TEMPLATE_PASSWORD_CHANGED_CONFIRMATION', value: '' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 2 }
-    }
-  }
-}
-
-// auth-worker: Redis queue worker (skips migrations)
-resource authWorker 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'auth-worker'
-  location: location
-  properties: {
-    managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'app-key', value: authAppKey }
-        { name: 'db-password', value: mysqlRootPassword }
-        { name: 'encryption-key', value: internalEncryptionKey }
-        { name: 'mail-password', value: mailPassword }
-        { name: 'brevo-key', value: brevoApiKey }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'auth-worker'
-          image: placeholderImage
-          command: [ 'php' ]
-          args: [ 'artisan', 'queue:work', '--tries=3', '--sleep=3' ]
-          resources: { cpu: '0.25', memory: '0.5Gi' }
-          env: [
-            { name: 'APP_ENV', value: 'production' }
-            { name: 'APP_KEY', secretRef: 'app-key' }
-            { name: 'INTERNAL_ENCRYPTION_KEY', secretRef: 'encryption-key' }
-            { name: 'DB_HOST', value: mysqlDb.properties.configuration.ingress.fqdn }
-            { name: 'DB_DATABASE', value: 'capstone_auth' }
-            { name: 'DB_USERNAME', value: 'root' }
-            { name: 'DB_PASSWORD', secretRef: 'db-password' }
-            { name: 'REDIS_HOST', value: redis.properties.configuration.ingress.fqdn }
-            { name: 'REDIS_PORT', value: '6379' }
-            { name: 'QUEUE_CONNECTION', value: 'redis' }
-            { name: 'MAIL_MAILER', value: 'log' }
-            { name: 'EMAIL_NOTIFICATIONS_PROVIDER', value: 'log' }
-            { name: 'BREVO_API_KEY', secretRef: 'brevo-key' }
-            { name: 'MAIL_PASSWORD', secretRef: 'mail-password' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 2 }
-    }
+    minReplicas: minReplicas
+    registryServer: registryServer
+    registryUser: registryUser
+    registryPassword: registryPassword
+    sermsWebImage: '${imgPrefix}serms-web:${imageTag}'
+    sermsApiImage: '${imgPrefix}serms-api:${imageTag}'
+    sermsAppKey: sermsAppKey
+    mysqlPassword: mysqlRootPassword
+    jwtSecret: jwtSecret
+    aiServiceApiKey: aiServiceApiKey
+    supabaseAccessKey: supabaseAccessKey
+    supabaseSecretKey: supabaseSecretKey
+    mysqlHost: activeMysqlHost
+    redisHost: activeRedisHost
+    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
+    aiServiceUrl: 'http://ocr-api.${environmentName}.${location}.azurecontainerapps.io'
+    supabaseUrl: supabaseUrl
+    supabaseRegion: supabaseRegion
+    supabaseBucket: supabaseBucket
+    supabaseEndpoint: supabaseEndpoint
   }
 }
 
 // ---------------------------------------------------------------------------
-//  SERMS
+// 3. OCR Pipeline Module
 // ---------------------------------------------------------------------------
-// serms-web: static Vue build served by nginx (base /serms/, port 80)
-resource sermsWeb 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'serms-web'
-  location: location
-  properties: {
+module ocr 'modules/ocr.bicep' = if (deployOcr) {
+  name: 'ocr-deploy'
+  params: {
+    location: location
     managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 80, transport: 'http', allowInsecure: true }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [ { name: 'acr-pass', value: acrPass } ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'serms-web'
-          image: placeholderImage
-          resources: { cpu: '0.25', memory: '0.5Gi' }
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 3 }
-    }
-  }
-}
-
-// serms-api: Laravel API (artisan serve override; entrypoint runs migrations)
-resource sermsApi 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'serms-api'
-  location: location
-  properties: {
-    managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 8000, transport: 'http', allowInsecure: true }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'app-key', value: sermsAppKey }
-        { name: 'db-password', value: mysqlRootPassword }
-        { name: 'jwt-secret', value: jwtSecret }
-        { name: 'ai-api-key', value: aiServiceApiKey }
-        { name: 'supabase-key', value: supabaseAccessKey }
-        { name: 'supabase-secret', value: supabaseSecretKey }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'serms-api'
-          image: placeholderImage
-          args: [ 'php', 'artisan', 'serve', '--host=0.0.0.0', '--port=8000', '--no-reload' ]
-          resources: { cpu: '0.5', memory: '1.0Gi' }
-          env: [
-            { name: 'APP_ENV', value: 'production' }
-            { name: 'APP_DEBUG', value: 'false' }
-            { name: 'APP_KEY', secretRef: 'app-key' }
-            { name: 'APP_URL', value: 'http://${loginServer}' }
-            { name: 'DB_CONNECTION', value: 'mysql' }
-            { name: 'DB_HOST', value: mysqlDb.properties.configuration.ingress.fqdn }
-            { name: 'DB_PORT', value: '3306' }
-            { name: 'DB_DATABASE', value: 'serms' }
-            { name: 'DB_USERNAME', value: 'root' }
-            { name: 'DB_PASSWORD', secretRef: 'db-password' }
-            { name: 'REDIS_HOST', value: redis.properties.configuration.ingress.fqdn }
-            { name: 'REDIS_PORT', value: '6379' }
-            { name: 'REDIS_PASSWORD', value: '' }
-            { name: 'CACHE_STORE', value: 'redis' }
-            { name: 'QUEUE_CONNECTION', value: 'database' }
-            { name: 'SERMS_SERVICE_ROLE', value: 'api' }
-            { name: 'AUTH_SERVICE_URL', value: 'http://${authApi.properties.configuration.ingress.fqdn}' }
-            { name: 'JWT_SECRET', secretRef: 'jwt-secret' }
-            { name: 'JWT_PUBLIC_KEY_PATH', value: 'storage/oauth-public.key' }
-            { name: 'AI_SERVICE_URL', value: 'http://${ocrApi.properties.configuration.ingress.fqdn}' }
-            { name: 'AI_SERVICE_API_KEY', secretRef: 'ai-api-key' }
-            { name: 'AI_SERVICE_CALLBACK_BASE_URL', value: 'http://${sermsApiFqdn}' }
-            { name: 'AI_SERVICE_TIMEOUT', value: '10' }
-            { name: 'SUPABASE_STORAGE_DRIVER', value: 's3' }
-            { name: 'SUPABASE_URL', value: supabaseUrl }
-            { name: 'SUPABASE_REGION', value: supabaseRegion }
-            { name: 'SUPABASE_BUCKET', value: supabaseBucket }
-            { name: 'SUPABASE_ENDPOINT', value: supabaseEndpoint }
-            { name: 'SUPABASE_ACCESS_KEY_ID', secretRef: 'supabase-key' }
-            { name: 'SUPABASE_SECRET_ACCESS_KEY', secretRef: 'supabase-secret' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 2 }
-    }
-  }
-}
-
-// serms-worker: Laravel DB-backed queue worker
-resource sermsWorker 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'serms-worker'
-  location: location
-  properties: {
-    managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'app-key', value: sermsAppKey }
-        { name: 'db-password', value: mysqlRootPassword }
-        { name: 'jwt-secret', value: jwtSecret }
-        { name: 'ai-api-key', value: aiServiceApiKey }
-        { name: 'supabase-key', value: supabaseAccessKey }
-        { name: 'supabase-secret', value: supabaseSecretKey }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'serms-worker'
-          image: placeholderImage
-          command: [ 'php' ]
-          args: [ 'artisan', 'queue:work', '--sleep=3', '--tries=3' ]
-          resources: { cpu: '0.25', memory: '0.5Gi' }
-          env: [
-            { name: 'APP_ENV', value: 'production' }
-            { name: 'APP_KEY', secretRef: 'app-key' }
-            { name: 'DB_HOST', value: mysqlDb.properties.configuration.ingress.fqdn }
-            { name: 'DB_PORT', value: '3306' }
-            { name: 'DB_DATABASE', value: 'serms' }
-            { name: 'DB_USERNAME', value: 'root' }
-            { name: 'DB_PASSWORD', secretRef: 'db-password' }
-            { name: 'REDIS_HOST', value: redis.properties.configuration.ingress.fqdn }
-            { name: 'QUEUE_CONNECTION', value: 'database' }
-            { name: 'SERMS_SERVICE_ROLE', value: 'worker' }
-            { name: 'AUTH_SERVICE_URL', value: 'http://${authApi.properties.configuration.ingress.fqdn}' }
-            { name: 'JWT_SECRET', secretRef: 'jwt-secret' }
-            { name: 'AI_SERVICE_URL', value: 'http://${ocrApi.properties.configuration.ingress.fqdn}' }
-            { name: 'AI_SERVICE_API_KEY', secretRef: 'ai-api-key' }
-            { name: 'AI_SERVICE_CALLBACK_BASE_URL', value: 'http://${sermsApi.properties.configuration.ingress.fqdn}' }
-            { name: 'SUPABASE_ACCESS_KEY_ID', secretRef: 'supabase-key' }
-            { name: 'SUPABASE_SECRET_ACCESS_KEY', secretRef: 'supabase-secret' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 2 }
-    }
+    minReplicas: minReplicas
+    registryServer: registryServer
+    registryUser: registryUser
+    registryPassword: registryPassword
+    ocrApiImage: '${imgPrefix}ocr-api:${imageTag}'
+    ocrWorkerImage: '${imgPrefix}ocr-api:${imageTag}'
+    ocrOllamaImage: '${imgPrefix}ocr-ollama:${imageTag}'
+    sermsApiKey: aiServiceApiKey
+    prsApiKey: prsApiKey
+    postgresPassword: postgresPassword
+    redisHost: activeRedisHost
+    postgresHost: activePostgresHost
+    mongoHost: activeMongoHost
   }
 }
 
 // ---------------------------------------------------------------------------
-//  OCR pipeline (FastAPI + Celery worker + local Ollama LLM)
+// 4. PRS Module
 // ---------------------------------------------------------------------------
-resource ocrApi 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'ocr-api'
-  location: location
-  properties: {
+module prs 'modules/prs.bicep' = if (deployPrs) {
+  name: 'prs-deploy'
+  params: {
+    location: location
     managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 8010, transport: 'http', allowInsecure: true }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'serms-api-key', value: aiServiceApiKey }
-        { name: 'prs-api-key', value: prsApiKey }
-        { name: 'callback-api-key', value: aiServiceApiKey }
-        { name: 'pg-password', value: postgresPassword }
-        { name: 'pg-user', value: 'ocr_user' }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'ocr-api'
-          image: placeholderImage
-          resources: { cpu: '0.5', memory: '1.0Gi' }
-          env: [
-            { name: 'APP_ENV', value: 'production' }
-            { name: 'SERMS_API_KEY', secretRef: 'serms-api-key' }
-            { name: 'PRS_API_KEY', secretRef: 'prs-api-key' }
-            { name: 'CALLBACK_API_KEY', secretRef: 'callback-api-key' }
-            { name: 'OLLAMA_BASE_URL', value: 'http://${ollama.properties.configuration.ingress.fqdn}' }
-            { name: 'OLLAMA_MODEL', value: 'qwen2.5:1.5b' }
-            { name: 'REDIS_URL', value: 'redis://${redis.properties.configuration.ingress.fqdn}:6379/0' }
-            { name: 'MONGODB_URL', value: 'mongodb://${mongo.properties.configuration.ingress.fqdn}:27017' }
-            { name: 'MONGODB_DATABASE', value: 'ocr_pipeline' }
-            { name: 'POSTGRES_URL', value: 'postgresql+asyncpg://ocr_user:${postgresPassword}@${postgres.properties.configuration.ingress.fqdn}:5432/ocr_pipeline' }
-            { name: 'EMBEDDING_MODEL', value: 'all-MiniLM-L6-v2' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 2 }
-    }
-  }
-}
-
-resource ocrWorker 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'ocr-worker'
-  location: location
-  properties: {
-    managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'serms-api-key', value: aiServiceApiKey }
-        { name: 'prs-api-key', value: prsApiKey }
-        { name: 'callback-api-key', value: aiServiceApiKey }
-        { name: 'pg-password', value: postgresPassword }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'ocr-worker'
-          image: placeholderImage
-          command: [ 'celery' ]
-          args: [ '-A', 'app.tasks.celery_app', 'worker', '--loglevel=info' ]
-          resources: { cpu: '1.0', memory: '2.0Gi' }
-          env: [
-            { name: 'APP_ENV', value: 'production' }
-            { name: 'SERMS_API_KEY', secretRef: 'serms-api-key' }
-            { name: 'PRS_API_KEY', secretRef: 'prs-api-key' }
-            { name: 'CALLBACK_API_KEY', secretRef: 'callback-api-key' }
-            { name: 'OLLAMA_BASE_URL', value: 'http://${ollama.properties.configuration.ingress.fqdn}' }
-            { name: 'OLLAMA_MODEL', value: 'qwen2.5:1.5b' }
-            { name: 'REDIS_URL', value: 'redis://${redis.properties.configuration.ingress.fqdn}:6379/0' }
-            { name: 'MONGODB_URL', value: 'mongodb://${mongo.properties.configuration.ingress.fqdn}:27017' }
-            { name: 'MONGODB_DATABASE', value: 'ocr_pipeline' }
-            { name: 'POSTGRES_URL', value: 'postgresql+asyncpg://ocr_user:${postgresPassword}@${postgres.properties.configuration.ingress.fqdn}:5432/ocr_pipeline' }
-            { name: 'OMP_NUM_THREADS', value: '1' }
-            { name: 'OMP_THREAD_LIMIT', value: '1' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 3 }
-    }
+    minReplicas: minReplicas
+    registryServer: registryServer
+    registryUser: registryUser
+    registryPassword: registryPassword
+    prsWebImage: '${imgPrefix}prs-web:${imageTag}'
+    prsApiImage: '${imgPrefix}prs-api:${imageTag}'
+    mysqlPassword: mysqlRootPassword
+    jwtSecret: jwtSecret
+    prsApiKey: prsApiKey
+    mysqlHost: activeMysqlHost
+    redisHost: activeRedisHost
+    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
+    ocrServiceUrl: 'http://ocr-api.${environmentName}.${location}.azurecontainerapps.io'
   }
 }
 
 // ---------------------------------------------------------------------------
-//  OCR: local Ollama LLM (qwen2.5:1.5b) — the demo highlight
+// 5. CMS Module
 // ---------------------------------------------------------------------------
-resource ollama 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'ocr-ollama'
-  location: location
-  properties: {
+module cms 'modules/cms.bicep' = if (deployCms) {
+  name: 'cms-deploy'
+  params: {
+    location: location
     managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: true, targetPort: 11434, transport: 'http', allowInsecure: true }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [ { name: 'acr-pass', value: acrPass } ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'ocr-ollama'
-          image: placeholderImage
-          resources: { cpu: '1.0', memory: '2.0Gi' }
-        }
-      ]
-      scale: { minReplicas: 1, maxReplicas: 1 }
-    }
+    minReplicas: minReplicas
+    registryServer: registryServer
+    registryUser: registryUser
+    registryPassword: registryPassword
+    cmsWebImage: '${imgPrefix}cms-web:${imageTag}'
+    cmsBackendImage: '${imgPrefix}cms-backend:${imageTag}'
+    mysqlPassword: mysqlRootPassword
+    jwtSecret: jwtSecret
+    internalEncryptionKey: internalEncryptionKey
+    mysqlHost: activeMysqlHost
+    redisHost: activeRedisHost
+    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
   }
 }
 
 // ---------------------------------------------------------------------------
-//  Data stores (ephemeral, shared across the services)
+// 6. Ticketing Module
 // ---------------------------------------------------------------------------
-resource mysqlDb 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'shared-mysql'
-  location: location
-  properties: {
+module ticketing 'modules/ticketing.bicep' = if (deployTicketing) {
+  name: 'ticketing-deploy'
+  params: {
+    location: location
     managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: false, targetPort: 3306, transport: 'tcp', exposedPort: 3306 }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'root-password', value: mysqlRootPassword }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'shared-mysql'
-          image: placeholderImage
-          resources: { cpu: '0.5', memory: '1.0Gi' }
-          env: [
-            { name: 'MYSQL_ROOT_PASSWORD', secretRef: 'root-password' }
-            { name: 'MYSQL_DATABASE', value: 'serms' }
-            { name: 'MYSQL_USER', value: 'serms_user' }
-            { name: 'MYSQL_PASSWORD', secretRef: 'root-password' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 1 }
-    }
+    minReplicas: minReplicas
+    registryServer: registryServer
+    registryUser: registryUser
+    registryPassword: registryPassword
+    ticketingWebImage: '${imgPrefix}ticketing-web:${imageTag}'
+    ticketingGatewayImage: '${imgPrefix}ticketing-gateway:${imageTag}'
+    mysqlPassword: mysqlRootPassword
+    jwtSecret: jwtSecret
+    mysqlHost: activeMysqlHost
+    redisHost: activeRedisHost
+    authServiceUrl: 'http://auth-api.${environmentName}.${location}.azurecontainerapps.io'
   }
 }
 
-resource redis 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'shared-redis'
-  location: location
-  properties: {
+// ---------------------------------------------------------------------------
+// 7. Central Auth Module & Nginx Gateway Front Door
+// ---------------------------------------------------------------------------
+var routedSermsWebUrl = deploySerms ? 'http://${serms!.outputs.sermsWebFqdn}' : externalSermsWebUrl
+var routedSermsApiUrl = deploySerms ? 'http://${serms!.outputs.sermsApiFqdn}' : externalSermsApiUrl
+var routedPrsWebUrl = deployPrs ? 'http://${prs!.outputs.prsWebFqdn}' : externalPrsWebUrl
+var routedPrsApiUrl = deployPrs ? 'http://${prs!.outputs.prsApiFqdn}' : externalPrsApiUrl
+var routedCmsWebUrl = deployCms ? 'http://${cms!.outputs.cmsWebFqdn}' : externalCmsWebUrl
+var routedCmsVendorUrl = deployCms ? 'http://${cms!.outputs.vendorManagementFqdn}' : externalCmsVendorUrl
+var routedCmsContractUrl = deployCms ? 'http://${cms!.outputs.contractManagementFqdn}' : externalCmsContractUrl
+var routedCmsSearchUrl = deployCms ? 'http://${cms!.outputs.searchFqdn}' : externalCmsSearchUrl
+var routedCmsNotificationUrl = deployCms ? 'http://${cms!.outputs.notificationFqdn}' : externalCmsNotificationUrl
+var routedCmsAiUrl = deployCms ? 'http://${cms!.outputs.aiServiceFqdn}' : externalCmsAiUrl
+var routedCmsAnalyticsUrl = deployCms ? 'http://${cms!.outputs.analyticsServiceFqdn}' : externalCmsAnalyticsUrl
+var routedTicketingWebUrl = deployTicketing ? 'http://${ticketing!.outputs.ticketingWebFqdn}' : externalTicketingWebUrl
+var routedTicketingGatewayUrl = deployTicketing ? 'http://${ticketing!.outputs.ticketingGatewayFqdn}' : externalTicketingGatewayUrl
+
+module auth 'modules/auth.bicep' = if (deployAuth) {
+  name: 'auth-deploy'
+  params: {
+    location: location
     managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: false, targetPort: 6379, transport: 'tcp', exposedPort: 6379 }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [ { name: 'acr-pass', value: acrPass } ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'shared-redis'
-          image: 'redis:7-alpine'
-          resources: { cpu: '0.25', memory: '0.5Gi' }
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 1 }
-    }
+    minReplicas: minReplicas
+    registryServer: registryServer
+    registryUser: registryUser
+    registryPassword: registryPassword
+    authProxyImage: '${imgPrefix}auth-proxy:${imageTag}'
+    authWebImage: '${imgPrefix}auth-web:${imageTag}'
+    authApiImage: '${imgPrefix}auth-api:${imageTag}'
+    authAppKey: authAppKey
+    mysqlPassword: mysqlRootPassword
+    internalEncryptionKey: internalEncryptionKey
+    mailPassword: mailPassword
+    brevoApiKey: brevoApiKey
+    mysqlHost: activeMysqlHost
+    redisHost: activeRedisHost
+    brevoBaseUrl: brevoBaseUrl
+    brevoWebhookSecret: brevoWebhookSecret
+    brevoWebhookHeader: brevoWebhookHeader
+    mailFromAddress: mailFromAddress
+    mailFromName: mailFromName
+    vendorManagementUrl: vendorManagementUrl
+    sermsWebUrl: routedSermsWebUrl
+    sermsApiUrl: routedSermsApiUrl
+    prsWebUrl: routedPrsWebUrl
+    prsApiUrl: routedPrsApiUrl
+    cmsWebUrl: routedCmsWebUrl
+    cmsVendorUrl: routedCmsVendorUrl
+    cmsContractUrl: routedCmsContractUrl
+    cmsSearchUrl: routedCmsSearchUrl
+    cmsNotificationUrl: routedCmsNotificationUrl
+    cmsAiUrl: routedCmsAiUrl
+    cmsAnalyticsUrl: routedCmsAnalyticsUrl
+    ticketingWebUrl: routedTicketingWebUrl
+    ticketingGatewayUrl: routedTicketingGatewayUrl
   }
 }
 
-resource postgres 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'shared-postgres'
-  location: location
-  properties: {
-    managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: false, targetPort: 5432, transport: 'tcp', exposedPort: 5432 }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [
-        { name: 'acr-pass', value: acrPass }
-        { name: 'pg-password', value: postgresPassword }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'shared-postgres'
-          image: 'pgvector/pgvector:pg16'
-          resources: { cpu: '0.5', memory: '1.0Gi' }
-          env: [
-            { name: 'POSTGRES_USER', value: 'ocr_user' }
-            { name: 'POSTGRES_PASSWORD', secretRef: 'pg-password' }
-            { name: 'POSTGRES_DB', value: 'ocr_pipeline' }
-          ]
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 1 }
-    }
-  }
-}
-
-resource mongo 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'shared-mongo'
-  location: location
-  properties: {
-    managedEnvironmentId: managedEnvironment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { transport: 'tcp', targetPort: 27017, exposedPort: 27017, external: false }
-      registries: [
-        { server: loginServer, username: acrUser, passwordSecretRef: 'acr-pass' }
-      ]
-      secrets: [ { name: 'acr-pass', value: acrPass } ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'shared-mongo'
-          image: 'mongo:7'
-          resources: { cpu: '0.5', memory: '1.0Gi' }
-        }
-      ]
-      scale: { minReplicas: minReplicas, maxReplicas: 1 }
-    }
-  }
-}
-
-output authProxyFqdn string = authProxy.properties.configuration.ingress.fqdn
+output authProxyFqdn string = deployAuth ? auth!.outputs.authProxyFqdn : ''
+output authApiFqdn string = deployAuth ? auth!.outputs.authApiFqdn : ''
+output authWebFqdn string = deployAuth ? auth!.outputs.authWebFqdn : ''
+output sermsWebFqdn string = deploySerms ? serms!.outputs.sermsWebFqdn : externalSermsWebUrl
+output sermsApiFqdn string = deploySerms ? serms!.outputs.sermsApiFqdn : externalSermsApiUrl
+output prsWebFqdn string = deployPrs ? prs!.outputs.prsWebFqdn : externalPrsWebUrl
+output prsApiFqdn string = deployPrs ? prs!.outputs.prsApiFqdn : externalPrsApiUrl
+output cmsWebFqdn string = deployCms ? cms!.outputs.cmsWebFqdn : externalCmsWebUrl
+output ticketingWebFqdn string = deployTicketing ? ticketing!.outputs.ticketingWebFqdn : externalTicketingWebUrl

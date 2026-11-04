@@ -1,0 +1,211 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "8595106044645829954"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Region — must match the Managed Environment region."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Managed Environment ID."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas. 0 = serverless scale-to-zero, 1 = warm."
+      }
+    },
+    "registryServer": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryUser": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "ticketingWebImage": {
+      "type": "string",
+      "defaultValue": "docker.io/library/nginx:alpine"
+    },
+    "ticketingGatewayImage": {
+      "type": "string",
+      "defaultValue": "docker.io/library/nginx:alpine"
+    },
+    "mysqlPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "jwtSecret": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "mysqlHost": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "redisHost": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "authServiceUrl": {
+      "type": "string",
+      "defaultValue": ""
+    }
+  },
+  "variables": {
+    "hasRegistry": "[and(not(empty(parameters('registryServer'))), not(empty(parameters('registryUser'))))]",
+    "registryConfig": "[if(variables('hasRegistry'), createArray(createObject('server', parameters('registryServer'), 'username', parameters('registryUser'), 'passwordSecretRef', 'reg-pass')), createArray())]",
+    "registrySecret": "[if(variables('hasRegistry'), createArray(createObject('name', 'reg-pass', 'value', parameters('registryPassword'))), createArray())]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "ticketing-web",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 5005,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[variables('registrySecret')]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "ticketing-web",
+              "image": "[parameters('ticketingWebImage')]",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "20"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "ticketing-gateway",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 80,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'db-password', 'value', parameters('mysqlPassword')), createObject('name', 'jwt-secret', 'value', parameters('jwtSecret'))))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "ticketing-gateway",
+              "image": "[parameters('ticketingGatewayImage')]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "env": [
+                {
+                  "name": "APP_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "DB_HOST",
+                  "value": "[parameters('mysqlHost')]"
+                },
+                {
+                  "name": "DB_DATABASE",
+                  "value": "ticketing"
+                },
+                {
+                  "name": "DB_PASSWORD",
+                  "secretRef": "db-password"
+                },
+                {
+                  "name": "REDIS_HOST",
+                  "value": "[parameters('redisHost')]"
+                },
+                {
+                  "name": "AUTH_SERVICE_URL",
+                  "value": "[parameters('authServiceUrl')]"
+                },
+                {
+                  "name": "JWT_SECRET",
+                  "secretRef": "jwt-secret"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "20"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "ticketingWebFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'ticketing-web'), '2024-03-01').configuration.ingress.fqdn]"
+    },
+    "ticketingGatewayFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'ticketing-gateway'), '2024-03-01').configuration.ingress.fqdn]"
+    }
+  }
+}
