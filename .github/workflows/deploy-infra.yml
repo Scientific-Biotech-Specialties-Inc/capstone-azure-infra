@@ -1,22 +1,35 @@
 name: deploy-infra
 
-# Deploys Azure infrastructure (ACR + Managed Environment + container apps).
-# Runs manually or on push to main. Requires Azure secrets configured in the repo.
-#
-# Required repository secrets:
-#   AZURE_CREDENTIALS  - JSON service principal with Contributor on the RG/subscription
-#
+# Deploys Azure infrastructure (Core environment, Bicep modules, and container apps).
+# Supports modular subgroup deployments and serverless scaling.
+
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths: [ 'infra/**', 'containers/**' ]
+    inputs:
+      module:
+        description: 'Module to deploy (core, prs, cms, ticketing, all)'
+        required: true
+        default: 'core'
+        type: choice
+        options:
+          - core
+          - prs
+          - cms
+          - ticketing
+          - all
+      scale_mode:
+        description: 'Scale profile (Serverless = 0 minReplicas, WarmDemo = 1 minReplicas)'
+        required: true
+        default: 'Serverless'
+        type: choice
+        options:
+          - Serverless
+          - WarmDemo
 
 env:
   RG: rg-capstone
   LOCATION: eastus
   ENV: capstone-env
-  ACR: capstoneacr0001
   IMAGE_TAG: latest
 
 permissions:
@@ -39,27 +52,48 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Validate Bicep
+      - name: Core Infrastructure Deployment
         run: |
           az group create -n ${{ env.RG }} -l ${{ env.LOCATION }} -o none
-          az deployment group what-if -g ${{ env.RG }} \
-            -f infra/main.bicep -p location=${{ env.LOCATION }} environmentName=${{ env.ENV }} acrName=${{ env.ACR }}
-
-      - name: Deploy core (ACR + Managed Environment)
-        run: |
-          az deployment group create -g ${{ env.RG }} -n capstone-infra \
+          az deployment group create -g ${{ env.RG }} -n capstone-core-infra \
             -f infra/main.bicep \
-            -p location=${{ env.LOCATION }} environmentName=${{ env.ENV }} acrName=${{ env.ACR }}
+            -p location=${{ env.LOCATION }} environmentName=${{ env.ENV }} deployAcr=false deployStorage=true
 
-      # Note: container images are built & pushed to ACR by the three APP repos'
-      # own deploy.yml (they have the source + Dockerfiles). Run those first, or
-      # run scripts/deploy.ps1 locally, so images exist before this deploys apps.
-      - name: Deploy container apps
+      - name: Container Apps Deployment
         run: |
-          az deployment group create -g ${{ env.RG }} -n capstone-apps \
+          MIN_REPLICAS=0
+          if [ "${{ github.event.inputs.scale_mode }}" = "WarmDemo" ]; then
+            MIN_REPLICAS=1
+          fi
+
+          DEPLOY_STORES=false
+          DEPLOY_AUTH=false
+          DEPLOY_SERMS=false
+          DEPLOY_OCR=false
+          DEPLOY_PRS=false
+          DEPLOY_CMS=false
+          DEPLOY_TICKETING=false
+
+          MOD="${{ github.event.inputs.module }}"
+          if [ "$MOD" = "all" ]; then
+            DEPLOY_STORES=true; DEPLOY_AUTH=true; DEPLOY_SERMS=true; DEPLOY_OCR=true; DEPLOY_PRS=true; DEPLOY_CMS=true; DEPLOY_TICKETING=true
+          elif [ "$MOD" = "core" ]; then
+            DEPLOY_STORES=true; DEPLOY_AUTH=true; DEPLOY_SERMS=true; DEPLOY_OCR=true
+          elif [ "$MOD" = "prs" ]; then
+            DEPLOY_PRS=true
+          elif [ "$MOD" = "cms" ]; then
+            DEPLOY_CMS=true
+          elif [ "$MOD" = "ticketing" ]; then
+            DEPLOY_TICKETING=true
+          fi
+
+          az deployment group create -g ${{ env.RG }} -n capstone-apps-deploy \
             -f infra/apps.bicep \
-            -p acrName=${{ env.ACR }} environmentName=${{ env.ENV }} location=${{ env.LOCATION }} \
-               imageTag=$IMAGE_TAG minReplicas=1 \
+            -p location=${{ env.LOCATION }} environmentName=${{ env.ENV }} \
+               imageTag=${{ env.IMAGE_TAG }} minReplicas=$MIN_REPLICAS \
+               registryMode=ghcr registryServer="ghcr.io/scientific-biotech-specialties-inc" \
+               deployStores=$DEPLOY_STORES deployAuth=$DEPLOY_AUTH deploySerms=$DEPLOY_SERMS deployOcr=$DEPLOY_OCR \
+               deployPrs=$DEPLOY_PRS deployCms=$DEPLOY_CMS deployTicketing=$DEPLOY_TICKETING \
                mysqlRootPassword="${{ secrets.MYSQL_ROOT_PASSWORD }}" \
                postgresPassword="${{ secrets.POSTGRES_PASSWORD }}" \
                jwtSecret="${{ secrets.JWT_SECRET }}" \

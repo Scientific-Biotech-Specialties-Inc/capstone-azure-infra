@@ -1,0 +1,255 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "10635733181876505896"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Region — must match the Managed Environment region."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Managed Environment ID."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas. 0 = serverless scale-to-zero, 1 = warm."
+      }
+    },
+    "registryServer": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryUser": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "prsWebImage": {
+      "type": "string",
+      "defaultValue": "docker.io/library/nginx:alpine"
+    },
+    "prsApiImage": {
+      "type": "string",
+      "defaultValue": "docker.io/library/nginx:alpine"
+    },
+    "prsAppKey": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "mysqlPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "jwtSecret": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "prsApiKey": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "mysqlHost": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "mysqlPort": {
+      "type": "string",
+      "defaultValue": "3306"
+    },
+    "redisHost": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "redisPort": {
+      "type": "string",
+      "defaultValue": "6379"
+    },
+    "authServiceUrl": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "ocrServiceUrl": {
+      "type": "string",
+      "defaultValue": ""
+    }
+  },
+  "variables": {
+    "hasRegistry": "[and(not(empty(parameters('registryServer'))), not(empty(parameters('registryUser'))))]",
+    "registryConfig": "[if(variables('hasRegistry'), createArray(createObject('server', parameters('registryServer'), 'username', parameters('registryUser'), 'passwordSecretRef', 'reg-pass')), createArray())]",
+    "registrySecret": "[if(variables('hasRegistry'), createArray(createObject('name', 'reg-pass', 'value', parameters('registryPassword'))), createArray())]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "prs-web",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 5003,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[variables('registrySecret')]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "prs-web",
+              "image": "[parameters('prsWebImage')]",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "20"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "prs-api",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8000,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'app-key', 'value', if(not(empty(parameters('prsAppKey'))), parameters('prsAppKey'), 'base64:default_key')), createObject('name', 'db-password', 'value', parameters('mysqlPassword')), createObject('name', 'jwt-secret', 'value', parameters('jwtSecret')), createObject('name', 'prs-api-key', 'value', parameters('prsApiKey'))))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "prs-api",
+              "image": "[parameters('prsApiImage')]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "env": [
+                {
+                  "name": "APP_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "APP_KEY",
+                  "secretRef": "app-key"
+                },
+                {
+                  "name": "DB_CONNECTION",
+                  "value": "mysql"
+                },
+                {
+                  "name": "DB_HOST",
+                  "value": "[parameters('mysqlHost')]"
+                },
+                {
+                  "name": "DB_PORT",
+                  "value": "[parameters('mysqlPort')]"
+                },
+                {
+                  "name": "DB_DATABASE",
+                  "value": "prs"
+                },
+                {
+                  "name": "DB_USERNAME",
+                  "value": "root"
+                },
+                {
+                  "name": "DB_PASSWORD",
+                  "secretRef": "db-password"
+                },
+                {
+                  "name": "REDIS_HOST",
+                  "value": "[parameters('redisHost')]"
+                },
+                {
+                  "name": "REDIS_PORT",
+                  "value": "[parameters('redisPort')]"
+                },
+                {
+                  "name": "AUTH_SERVICE_URL",
+                  "value": "[parameters('authServiceUrl')]"
+                },
+                {
+                  "name": "OCR_SERVICE_URL",
+                  "value": "[parameters('ocrServiceUrl')]"
+                },
+                {
+                  "name": "PRS_API_KEY",
+                  "secretRef": "prs-api-key"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "20"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "prsWebFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'prs-web'), '2024-03-01').configuration.ingress.fqdn]"
+    },
+    "prsApiFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'prs-api'), '2024-03-01').configuration.ingress.fqdn]"
+    }
+  }
+}

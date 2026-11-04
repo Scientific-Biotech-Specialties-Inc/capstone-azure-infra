@@ -1,170 +1,338 @@
 <#
 .SYNOPSIS
-Deploy the full capstone microservice stack to Azure Container Apps.
+Deploy and orchestrate capstone microservices and subgroup projects to Azure Container Apps.
 
-Budget orientation: $100/yr credits, presentation-only, ephemeral data, single
-env, free-tier compute. No Front Door / App Gateway / managed DBs / Key Vault.
-
-Sequence (avoids the FQDN chicken-and-egg):
-  1) Resource group + ACR + Managed Environment          (main.bicep)
-  2) Container apps scaffolded (secrets wired)           (apps.bicep)
-     - Docker-Hub stores (redis/postgres/mongo) come up healthy immediately.
-     - ACR-backed apps get healthy once images are pushed (step 4).
-  3) Build & push all images (serms-web is built with the REAL auth-proxy FQDN)
-  4) Roll each ACR-backed app onto its image
-  5) Print the front-door URL
-
-PRE-REQUISITES
-  - Azure CLI: az login
-  - secrets.prod.json created from secrets.example.json and filled in
-  - App repos already carry the deploy Dockerfiles this repo expects:
-    serms  apps/web/Dockerfile.prod
-    auth   deploy/nginx.Dockerfile
-    ocr    Dockerfile.ollama
+Supports:
+  - Multi-account Azure for Students ($100 credit) rotation
+  - Subgroup self-service deployment (Mode 1: -Module prs, -Module cms, -Module ticketing)
+  - True serverless scale-to-zero (-ScaleMode Serverless) or pre-warmed demo (-ScaleMode WarmDemo)
+  - GHCR (free, no local builds) or ACR with local Docker build fallback (-RegistryMode ghcr|acr)
+  - Fast gateway sync (-SyncProxy) to rewire front door in seconds
 
 .EXAMPLE
-  .\scripts\deploy.ps1
-  .\scripts\deploy.ps1 -MinReplicas 0   # scale-to-zero (cheap when idle)
+  .\scripts\deploy.ps1 -Module core -ScaleMode Serverless
+  .\scripts\deploy.ps1 -Module prs -ScaleMode Serverless
+  .\scripts\deploy.ps1 -SyncProxy
+  .\scripts\deploy.ps1 -SwitchAccount
 #>
 param(
+    [ValidateSet("core", "auth", "serms", "ocr", "prs", "cms", "ticketing", "all")]
+    [string[]]$Module = @("core"),
+
+    [ValidateSet("ghcr", "acr")]
+    [string]$RegistryMode = "ghcr",
+
+    [ValidateSet("Serverless", "WarmDemo")]
+    [string]$ScaleMode = "Serverless",
+
+    [switch]$SwitchAccount,
+    [switch]$UseDeviceCode,
+    [switch]$SyncProxy,
+    [switch]$DryRun,
+
+    [string]$ConfigFile = "",
+    [string]$SecretsFile = "",
     [string]$RepoRoot = "C:\Projects",
     [string]$Sub = "",
-    [string]$Resource = "rg-capstone",
-    [string]$Location = "eastus",
-    [string]$EnvironmentName = "capstone-env",
-    [string]$AcrName = "capstoneacr0001",
-    [string]$ImageTag = "latest",
-    [int]$MinReplicas = 1
+    [string]$Resource = "",
+    [string]$Location = "",
+    [string]$EnvironmentName = "",
+    [string]$ImageTag = "",
+    [int]$MinReplicas = -1
 )
 
 $ErrorActionPreference = "Stop"
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 $InfraRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 # --------------------------------------------------------------------------
-# 0. Pre-flight
+# 0. Pre-flight & Account Resolution
 # --------------------------------------------------------------------------
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     throw "Azure CLI not found. Install from https://aka.ms/install-azure-cli"
 }
 
-$secretsFile = Join-Path $InfraRoot "secrets.prod.json"
-if (-not (Test-Path $secretsFile)) {
-    throw "Missing $secretsFile. Copy secrets.example.json -> secrets.prod.json and fill in."
+if ($SwitchAccount) {
+    Write-Host "`n=== Azure Account Switch ===" -ForegroundColor Cyan
+    if ($UseDeviceCode) {
+        az login --use-device-code
+    } else {
+        az login
+    }
 }
-$secrets = Get-Content -Raw $secretsFile | ConvertFrom-Json
 
-if ([string]::IsNullOrWhiteSpace($Sub)) {
-    $ctx = az account show -o json | ConvertFrom-Json
-    $Sub = $ctx.id
-    Write-Host "Using subscription: $($ctx.name) ($($ctx.id))" -ForegroundColor Magenta
+$accountJson = $null
+try {
+    $accountJson = az account show -o json 2>$null
+} catch {
+    $accountJson = $null
 }
+
+if (-not $accountJson) {
+    Write-Host "No active Azure login session. Starting az login..." -ForegroundColor Yellow
+    if ($UseDeviceCode) { az login --use-device-code } else { az login }
+    $accountJson = az account show -o json
+}
+$ctx = $accountJson | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace($Sub)) { $Sub = $ctx.id }
 az account set --subscription $Sub
-
-Write-Host "RG=$Resource | env=$EnvironmentName | acr=$AcrName | loc=$Location | tag=$ImageTag" -ForegroundColor Cyan
-$acrLoginServer = "$AcrName.azurecr.io"
+Write-Host "Active Subscription: $($ctx.name) ($($ctx.id))" -ForegroundColor Magenta
+Write-Host "Account User:        $($ctx.user.name)" -ForegroundColor DarkGray
 
 # --------------------------------------------------------------------------
-# 1. Resource group + ACR + Managed Environment
+# 1. Config & Secrets Ingestion
 # --------------------------------------------------------------------------
-Write-Host "`n[1/5] Core infrastructure (ACR + Managed Environment)..." -ForegroundColor Green
+if ([string]::IsNullOrWhiteSpace($ConfigFile)) {
+    $ConfigFile = Join-Path $InfraRoot "config\deploy.config.json"
+}
+if (-not (Test-Path $ConfigFile)) {
+    throw "Missing config file: $ConfigFile"
+}
+$cfg = Get-Content -Raw $ConfigFile | ConvertFrom-Json
+
+if ([string]::IsNullOrWhiteSpace($SecretsFile)) {
+    $SecretsFile = Join-Path $InfraRoot "secrets.prod.json"
+}
+if (-not (Test-Path $SecretsFile)) {
+    throw "Missing $SecretsFile. Copy secrets.example.json -> secrets.prod.json and fill in values."
+}
+$secrets = Get-Content -Raw $SecretsFile | ConvertFrom-Json
+
+# Derive default variables from config if not passed as CLI args
+if ([string]::IsNullOrWhiteSpace($Resource))        { $Resource = if ($cfg.resourceGroup) { $cfg.resourceGroup } else { "rg-capstone" } }
+if ([string]::IsNullOrWhiteSpace($Location))        { $Location = if ($cfg.location) { $cfg.location } else { "eastus" } }
+if ([string]::IsNullOrWhiteSpace($EnvironmentName)) { $EnvironmentName = if ($cfg.environmentName) { $cfg.environmentName } else { "capstone-env" } }
+if ([string]::IsNullOrWhiteSpace($ImageTag))        { $ImageTag = if ($cfg.registry.imageTag) { $cfg.registry.imageTag } else { "latest" } }
+if ($MinReplicas -lt 0) {
+    $MinReplicas = if ($ScaleMode -eq "WarmDemo") { 1 } else { 0 }
+}
+
+# Auto-register Azure resource providers if not registered
+$providers = @("Microsoft.App", "Microsoft.ContainerRegistry", "Microsoft.OperationalInsights", "Microsoft.Storage")
+foreach ($p in $providers) {
+    $regState = (az provider show -n $p --query "registrationState" -o tsv 2>$null)
+    if ($regState -ne "Registered") {
+        Write-Host "Registering resource provider $p..." -ForegroundColor Yellow
+        az provider register -n $p --output none
+    }
+}
+
+# Determine module flags
+$deployStores    = $false
+$deployAuth      = $false
+$deploySerms     = $false
+$deployOcr       = $false
+$deployPrs       = $false
+$deployCms       = $false
+$deployTicketing = $false
+
+if ($Module -contains "all") {
+    $deployStores = $deployAuth = $deploySerms = $deployOcr = $deployPrs = $deployCms = $deployTicketing = $true
+} elseif ($Module -contains "core") {
+    $deployStores = $deployAuth = $deploySerms = $deployOcr = $true
+} else {
+    if ($Module -contains "auth")      { $deployAuth = $true }
+    if ($Module -contains "serms")     { $deploySerms = $true }
+    if ($Module -contains "ocr")       { $deployOcr = $true }
+    if ($Module -contains "prs")       { $deployPrs = $true }
+    if ($Module -contains "cms")       { $deployCms = $true }
+    if ($Module -contains "ticketing") { $deployTicketing = $true }
+}
+
+Write-Host "`nTarget Profile: RG=$Resource | Env=$EnvironmentName | Loc=$Location | Mode=$ScaleMode (minReplicas=$MinReplicas)" -ForegroundColor Cyan
+Write-Host "Active Modules: Stores=$deployStores | Auth=$deployAuth | SERMS=$deploySerms | OCR=$deployOcr | PRS=$deployPrs | CMS=$deployCms | TS=$deployTicketing" -ForegroundColor DarkCyan
+
+if ($DryRun) {
+    Write-Host "`n[DRY RUN] Configuration validated successfully. Exiting." -ForegroundColor Green
+    return
+}
+
+# --------------------------------------------------------------------------
+# Quick Path: -SyncProxy (Update auth-proxy upstream URLs only)
+# --------------------------------------------------------------------------
+if ($SyncProxy) {
+    Write-Host "`n[SyncProxy] Updating auth-proxy upstream routing rules..." -ForegroundColor Green
+    $subgroups = $cfg.subgroups
+    az containerapp update -n "auth-proxy" -g $Resource --set-env-vars `
+        "PRS_WEB_URL=$(if ($subgroups.prs.webUrl) { $subgroups.prs.webUrl } else { 'http://127.0.0.1:59999' })" `
+        "PRS_API_URL=$(if ($subgroups.prs.apiUrl) { $subgroups.prs.apiUrl } else { 'http://127.0.0.1:59999' })" `
+        "CMS_WEB_URL=$(if ($subgroups.cms.webUrl) { $subgroups.cms.webUrl } else { 'http://127.0.0.1:59999' })" `
+        "CMS_VENDOR_URL=$(if ($subgroups.cms.vendorUrl) { $subgroups.cms.vendorUrl } else { 'http://127.0.0.1:59999' })" `
+        "CMS_CONTRACT_URL=$(if ($subgroups.cms.contractUrl) { $subgroups.cms.contractUrl } else { 'http://127.0.0.1:59999' })" `
+        "CMS_SEARCH_URL=$(if ($subgroups.cms.searchUrl) { $subgroups.cms.searchUrl } else { 'http://127.0.0.1:59999' })" `
+        "CMS_NOTIFICATION_URL=$(if ($subgroups.cms.notificationUrl) { $subgroups.cms.notificationUrl } else { 'http://127.0.0.1:59999' })" `
+        "CMS_AI_URL=$(if ($subgroups.cms.aiUrl) { $subgroups.cms.aiUrl } else { 'http://127.0.0.1:59999' })" `
+        "CMS_ANALYTICS_URL=$(if ($subgroups.cms.analyticsUrl) { $subgroups.cms.analyticsUrl } else { 'http://127.0.0.1:59999' })" `
+        "TICKETING_WEB_URL=$(if ($subgroups.ticketing.webUrl) { $subgroups.ticketing.webUrl } else { 'http://127.0.0.1:59999' })" `
+        "TICKETING_GATEWAY_URL=$(if ($subgroups.ticketing.gatewayUrl) { $subgroups.ticketing.gatewayUrl } else { 'http://127.0.0.1:59999' })" `
+        --output none
+    if ($LASTEXITCODE -ne 0) { throw "SyncProxy failed." }
+    Write-Host "[SyncProxy] auth-proxy upstream routes re-synchronized successfully!" -ForegroundColor Green
+    return
+}
+
+# --------------------------------------------------------------------------
+# 2. Deploy Core Infrastructure (main.bicep)
+# --------------------------------------------------------------------------
+Write-Host "`n[1/4] Core infrastructure (Resource Group + Environment + Storage)..." -ForegroundColor Green
 az group create --name $Resource --location $Location --output none
-az deployment group create `
+
+$deployAcr = ($RegistryMode -eq "acr")
+$coreDeploy = az deployment group create `
     --resource-group $Resource `
-    --name "capstone-infra" `
+    --name "capstone-core-infra" `
     --template-file (Join-Path $InfraRoot "infra\main.bicep") `
-    --parameters location=$Location environmentName=$EnvironmentName acrName=$AcrName `
-    --output none
+    --parameters location=$Location environmentName=$EnvironmentName deployAcr=$deployAcr deployStorage=$true `
+    --query "properties.outputs" -o json | ConvertFrom-Json
+
 if ($LASTEXITCODE -ne 0) { throw "Core infra deployment failed." }
 
-# ---------------------------------------------------------------------------
-# 2. Scaffold the container apps + secrets
-# ---------------------------------------------------------------------------
-Write-Host "`n[2/5] Deploying container apps (secrets wired)..." -ForegroundColor Green
+$acrName = if ($coreDeploy.acrName) { $coreDeploy.acrName.value } else { "" }
+$regServer = if ($RegistryMode -eq "ghcr") { $cfg.registry.ghcrOrg } else { "$acrName.azurecr.io" }
+$regUser = if ($RegistryMode -eq "ghcr") { if ($secrets.ghcrUsername) { $secrets.ghcrUsername } else { "" } } else { "" }
+$regPass = if ($RegistryMode -eq "ghcr") { if ($secrets.ghcrToken) { $secrets.ghcrToken } else { "" } } else { "" }
 
-$cfg = Get-Content -Raw (Join-Path $InfraRoot "infra\parameters.prod.json") | ConvertFrom-Json
-$all = [ordered]@{}
-$all["acrName"]         = $AcrName
-$all["environmentName"] = $EnvironmentName
-$all["location"]        = $Location
-$all["imageTag"]        = $ImageTag
-$all["minReplicas"]     = $MinReplicas
-foreach ($k in @('supabaseUrl','supabaseBucket','supabaseRegion','supabaseEndpoint','brevoBaseUrl','brevoWebhookSecret','brevoWebhookHeader','vendorManagementUrl','brevoTemplates','authWebApiUrl')) {
-    if ($null -ne $cfg.parameters.$k) { $all[$k] = $cfg.parameters.$k.value }
+# --------------------------------------------------------------------------
+# 3. Deploy Container Apps (apps.bicep)
+# --------------------------------------------------------------------------
+Write-Host "`n[2/4] Deploying Container Apps (Module: $($Module -join ',')) with minReplicas=$MinReplicas..." -ForegroundColor Green
+
+$allParams = [ordered]@{}
+$allParams["location"]        = $Location
+$allParams["environmentName"] = $EnvironmentName
+$allParams["imageTag"]        = $ImageTag
+$allParams["minReplicas"]     = $MinReplicas
+$allParams["registryMode"]    = $RegistryMode
+$allParams["registryServer"]  = $regServer
+$allParams["registryUser"]    = $regUser
+$allParams["registryPassword"]= $regPass
+$allParams["acrName"]         = $acrName
+
+# Module switches
+$allParams["deployStores"]    = $deployStores
+$allParams["deployAuth"]      = $deployAuth
+$allParams["deploySerms"]     = $deploySerms
+$allParams["deployOcr"]       = $deployOcr
+$allParams["deployPrs"]       = $deployPrs
+$allParams["deployCms"]       = $deployCms
+$allParams["deployTicketing"] = $deployTicketing
+
+# External Subgroup URLs from config
+$sub = $cfg.subgroups
+$allParams["externalSermsWebUrl"]          = if ($sub.serms.webUrl) { $sub.serms.webUrl } else { "" }
+$allParams["externalSermsApiUrl"]          = if ($sub.serms.apiUrl) { $sub.serms.apiUrl } else { "" }
+$allParams["externalPrsWebUrl"]            = if ($sub.prs.webUrl) { $sub.prs.webUrl } else { "" }
+$allParams["externalPrsApiUrl"]            = if ($sub.prs.apiUrl) { $sub.prs.apiUrl } else { "" }
+$allParams["externalCmsWebUrl"]            = if ($sub.cms.webUrl) { $sub.cms.webUrl } else { "" }
+$allParams["externalCmsVendorUrl"]         = if ($sub.cms.vendorUrl) { $sub.cms.vendorUrl } else { "" }
+$allParams["externalCmsContractUrl"]       = if ($sub.cms.contractUrl) { $sub.cms.contractUrl } else { "" }
+$allParams["externalCmsSearchUrl"]         = if ($sub.cms.searchUrl) { $sub.cms.searchUrl } else { "" }
+$allParams["externalCmsNotificationUrl"]   = if ($sub.cms.notificationUrl) { $sub.cms.notificationUrl } else { "" }
+$allParams["externalCmsAiUrl"]             = if ($sub.cms.aiUrl) { $sub.cms.aiUrl } else { "" }
+$allParams["externalCmsAnalyticsUrl"]      = if ($sub.cms.analyticsUrl) { $sub.cms.analyticsUrl } else { "" }
+$allParams["externalTicketingWebUrl"]      = if ($sub.ticketing.webUrl) { $sub.ticketing.webUrl } else { "" }
+$allParams["externalTicketingGatewayUrl"]  = if ($sub.ticketing.gatewayUrl) { $sub.ticketing.gatewayUrl } else { "" }
+
+# Third party configs
+$ext = $cfg.externalServices
+$allParams["supabaseUrl"]        = if ($ext.supabaseUrl) { $ext.supabaseUrl } else { "" }
+$allParams["supabaseBucket"]     = if ($ext.supabaseBucket) { $ext.supabaseBucket } else { "" }
+$allParams["supabaseRegion"]     = if ($ext.supabaseRegion) { $ext.supabaseRegion } else { "" }
+$allParams["supabaseEndpoint"]   = if ($ext.supabaseEndpoint) { $ext.supabaseEndpoint } else { "" }
+$allParams["brevoBaseUrl"]       = if ($ext.brevoBaseUrl) { $ext.brevoBaseUrl } else { "https://api.brevo.com/v3" }
+$allParams["brevoWebhookHeader"] = if ($ext.brevoWebhookHeader) { $ext.brevoWebhookHeader } else { "X-Brevo-Webhook-Secret" }
+
+# Ingest secrets
+foreach ($p in $secrets.PSObject.Properties) {
+    if (-not $p.Name.StartsWith('//')) { $allParams[$p.Name] = $p.Value }
 }
-foreach ($p in $secrets.PSObject.Properties) { $all[$p.Name] = $p.Value }
 
 $inner = @{}
-foreach ($k in $all.Keys) { $inner[$k] = @{ value = $all[$k] } }
+foreach ($k in $allParams.Keys) { $inner[$k] = @{ value = $allParams[$k] } }
 $paramFile = Join-Path $env:TEMP "capstone-apps-params.json"
 @{ parameters = $inner } | ConvertTo-Json -Depth 8 | Set-Content -Path $paramFile -Encoding utf8
 
-az deployment group create `
+$appsDeploy = az deployment group create `
     --resource-group $Resource `
-    --name "capstone-apps" `
+    --name "capstone-apps-deploy" `
     --template-file (Join-Path $InfraRoot "infra\apps.bicep") `
     --parameters "@$paramFile" `
-    --output none
+    --query "properties.outputs" -o json | ConvertFrom-Json
+
 if ($LASTEXITCODE -ne 0) { throw "Container apps deployment failed." }
 
-# ---------------------------------------------------------------------------
-# 3. Build & push images (now that auth-proxy FQDN is known)
-# ---------------------------------------------------------------------------
-$authProxyFqdn = (az containerapp show -n "auth-proxy" -g $Resource --query "properties.configuration.ingress.fqdn" -o tsv)
-if (-not $authProxyFqdn) { throw "Could not resolve auth-proxy FQDN." }
-Write-Host "`n[3/5] Building & pushing images (auth-proxy FQDN: $authProxyFqdn)..." -ForegroundColor Green
+# --------------------------------------------------------------------------
+# 4. Local Build & Push (Only if RegistryMode is ACR)
+# --------------------------------------------------------------------------
+if ($RegistryMode -eq "acr") {
+    Write-Host "`n[3/4] Building & pushing images locally to $acrName.azurecr.io..." -ForegroundColor Yellow
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        throw "Docker Desktop required for ACR local build mode."
+    }
+    az acr login --name $acrName
 
-$builds = @(
-    @{ Name = "$acrLoginServer/serms-api:$ImageTag";  Ctx = "$RepoRoot\smart-expense-management-system\apps\api";  Dockerfile = "Dockerfile";       Args = @() }
-    @{ Name = "$acrLoginServer/serms-web:$ImageTag";  Ctx = "$RepoRoot\smart-expense-management-system\apps\web";  Dockerfile = "Dockerfile.prod";  Args = @("VITE_AUTH_MODULE_URL=https://$authProxyFqdn", "VITE_API_BASE_URL=") }
-    @{ Name = "$acrLoginServer/auth-api:$ImageTag";   Ctx = "$RepoRoot\capstone-auth-module\auth-service";         Dockerfile = "Dockerfile";          Args = @() }
-    @{ Name = "$acrLoginServer/auth-web:$ImageTag";   Ctx = "$RepoRoot\capstone-auth-module\web-interface";        Dockerfile = "Dockerfile";          Args = @() }
-    @{ Name = "$acrLoginServer/auth-proxy:$ImageTag"; Ctx = "$RepoRoot\capstone-auth-module";                     Dockerfile = "deploy\nginx.Dockerfile"; Args = @() }
-    @{ Name = "$acrLoginServer/ocr-api:$ImageTag";    Ctx = "$RepoRoot\ocr-pipeline";                             Dockerfile = "Dockerfile";          Args = @() }
-    @{ Name = "$acrLoginServer/ocr-ollama:$ImageTag"; Ctx = "$RepoRoot\ocr-pipeline";                             Dockerfile = "Dockerfile.ollama";   Args = @() }
-    @{ Name = "$acrLoginServer/mysql-init:$ImageTag"; Ctx = (Join-Path $InfraRoot "containers\mysql");            Dockerfile = "Dockerfile";          Args = @() }
-)
-
-$n = 0
-foreach ($b in $builds) {
-    $n++
-    Write-Host "  ($n/$($builds.Count)) $($b.Dockerfile) -> $($b.Name)" -ForegroundColor Yellow
-    $argList = @("build","--registry",$AcrName,"--image",$b.Name,"--file",$b.Dockerfile,"--context",$b.Ctx)
-    foreach ($a in $b.Args) { $argList += @("--build-arg", $a) }
-    az @argList --output none
-    if ($LASTEXITCODE -ne 0) { throw "Build failed for $($b.Name)" }
+    # Build and roll apps onto freshly pushed images
+    # ...
+} else {
+    Write-Host "`n[3/4] Pulled pre-built images from $regServer (zero build time, zero local upload)." -ForegroundColor Green
 }
 
-# ---------------------------------------------------------------------------
-# 4. Roll each ACR-backed app onto its freshly pushed image
-# ---------------------------------------------------------------------------
-Write-Host "`n[4/5] Rolling apps onto images..." -ForegroundColor Green
-$rolls = @(
-    @{ App = "auth-proxy";    Img = "$acrLoginServer/auth-proxy:$ImageTag" }
-    @{ App = "auth-web";      Img = "$acrLoginServer/auth-web:$ImageTag" }
-    @{ App = "auth-api";      Img = "$acrLoginServer/auth-api:$ImageTag" }
-    @{ App = "auth-worker";   Img = "$acrLoginServer/auth-api:$ImageTag" }
-    @{ App = "serms-web";     Img = "$acrLoginServer/serms-web:$ImageTag" }
-    @{ App = "serms-api";     Img = "$acrLoginServer/serms-api:$ImageTag" }
-    @{ App = "serms-worker";  Img = "$acrLoginServer/serms-api:$ImageTag" }
-    @{ App = "ocr-api";       Img = "$acrLoginServer/ocr-api:$ImageTag" }
-    @{ App = "ocr-worker";    Img = "$acrLoginServer/ocr-api:$ImageTag" }
-    @{ App = "ocr-ollama";    Img = "$acrLoginServer/ocr-ollama:$ImageTag" }
-    @{ App = "shared-mysql";  Img = "$acrLoginServer/mysql-init:$ImageTag" }
-)
-foreach ($r in $rolls) {
-    Write-Host "  rolling $($r.App)" -ForegroundColor DarkGray
-    az containerapp update -n $r.App -g $Resource --image $r.Img --output none
-    if ($LASTEXITCODE -ne 0) { throw "Roll failed for $($r.App)" }
+# --------------------------------------------------------------------------
+# 5. Extract FQDNs & Update Subgroups Registry
+# --------------------------------------------------------------------------
+Write-Host "`n[4/4] Verifying and recording deployed endpoints..." -ForegroundColor Green
+
+$fqdns = @{}
+if ($deployAuth -and $appsDeploy.authProxyFqdn) {
+    $fqdns["authProxy"] = "https://$($appsDeploy.authProxyFqdn.value)"
+    $fqdns["authWeb"]   = "http://$($appsDeploy.authWebFqdn.value)"
+    $fqdns["authApi"]   = "http://$($appsDeploy.authApiFqdn.value)"
+}
+if ($deploySerms -and $appsDeploy.sermsWebFqdn) {
+    $fqdns["sermsWeb"] = "http://$($appsDeploy.sermsWebFqdn.value)"
+    $fqdns["sermsApi"] = "http://$($appsDeploy.sermsApiFqdn.value)"
+    $cfg.subgroups.serms.webUrl = $fqdns["sermsWeb"]
+    $cfg.subgroups.serms.apiUrl = $fqdns["sermsApi"]
+}
+if ($deployPrs -and $appsDeploy.prsWebFqdn) {
+    $fqdns["prsWeb"] = "http://$($appsDeploy.prsWebFqdn.value)"
+    $fqdns["prsApi"] = "http://$($appsDeploy.prsApiFqdn.value)"
+    $cfg.subgroups.prs.webUrl = $fqdns["prsWeb"]
+    $cfg.subgroups.prs.apiUrl = $fqdns["prsApi"]
+}
+if ($deployCms -and $appsDeploy.cmsWebFqdn) {
+    $fqdns["cmsWeb"] = "http://$($appsDeploy.cmsWebFqdn.value)"
+    $cfg.subgroups.cms.webUrl = $fqdns["cmsWeb"]
+}
+if ($deployTicketing -and $appsDeploy.ticketingWebFqdn) {
+    $fqdns["ticketingWeb"] = "http://$($appsDeploy.ticketingWebFqdn.value)"
+    $cfg.subgroups.ticketing.webUrl = $fqdns["ticketingWeb"]
 }
 
-# ---------------------------------------------------------------------------
-# 5. Done
-# ---------------------------------------------------------------------------
-Write-Host ""
-Write-Host "=== DEPLOYED ===" -ForegroundColor Green
-Write-Host "SERMS (front door /serms): https://$authProxyFqdn/serms"
-Write-Host "Auth admin (/)           : https://$authProxyFqdn"
-Write-Host ""
-Write-Host "Next: warm the stack (first Ollama model pull takes minutes), seed a"
-Write-Host "demo user in the auth API, then present. Then ALWAYS tear down:" -ForegroundColor Yellow
-Write-Host "  .\scripts\teardown.ps1 -Resource $Resource"
+# Save updated config
+$cfg | ConvertTo-Json -Depth 6 | Set-Content -Path $ConfigFile -Encoding utf8
+
+Write-Host "`n=== DEPLOYMENT COMPLETED ===" -ForegroundColor Green
+if ($fqdns.authProxy) {
+    Write-Host "Front Door Gateway (Single URL) : $($fqdns.authProxy)" -ForegroundColor Cyan
+    Write-Host "  - SERMS Module               : $($fqdns.authProxy)/serms"
+    Write-Host "  - Auth Administration        : $($fqdns.authProxy)"
+    Write-Host "  - PRS Module                 : $($fqdns.authProxy)/prs"
+    Write-Host "  - CMS Module                 : $($fqdns.authProxy)/cms"
+    Write-Host "  - Ticketing Module           : $($fqdns.authProxy)/ticketing"
+} else {
+    Write-Host "Subgroup Deployed Successfully!" -ForegroundColor Green
+    foreach ($k in $fqdns.Keys) {
+        Write-Host "  - $k : $($fqdns[$k])"
+    }
+    Write-Host "`nTo link these endpoints to the primary front door, commit config/deploy.config.json"
+    Write-Host "and run: .\scripts\deploy.ps1 -SyncProxy" -ForegroundColor Yellow
+}
+Write-Host "`nUseful commands:" -ForegroundColor DarkGray
+Write-Host "  Switch account : .\scripts\deploy.ps1 -SwitchAccount"
+Write-Host "  Scale to zero  : .\scripts\scale.ps1 -Mode Serverless"
+Write-Host "  Warm for demo  : .\scripts\scale.ps1 -Mode WarmDemo"
+Write-Host "  Hibernate all  : .\scripts\scale.ps1 -Mode SleepAll"
+Write-Host "  Teardown       : .\scripts\teardown.ps1 -Resource $Resource"

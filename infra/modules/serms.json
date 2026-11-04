@@ -1,0 +1,438 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "12948731227989037013"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Region — must match the Managed Environment region."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Managed Environment ID."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas. 0 = serverless scale-to-zero, 1 = warm."
+      }
+    },
+    "registryServer": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryUser": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "sermsWebImage": {
+      "type": "string"
+    },
+    "sermsApiImage": {
+      "type": "string"
+    },
+    "sermsAppKey": {
+      "type": "securestring"
+    },
+    "mysqlPassword": {
+      "type": "securestring"
+    },
+    "jwtSecret": {
+      "type": "securestring"
+    },
+    "aiServiceApiKey": {
+      "type": "securestring"
+    },
+    "supabaseAccessKey": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "supabaseSecretKey": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "mysqlHost": {
+      "type": "string"
+    },
+    "mysqlPort": {
+      "type": "string",
+      "defaultValue": "3306"
+    },
+    "redisHost": {
+      "type": "string"
+    },
+    "redisPort": {
+      "type": "string",
+      "defaultValue": "6379"
+    },
+    "authServiceUrl": {
+      "type": "string"
+    },
+    "aiServiceUrl": {
+      "type": "string"
+    },
+    "supabaseUrl": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "supabaseRegion": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "supabaseBucket": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "supabaseEndpoint": {
+      "type": "string",
+      "defaultValue": ""
+    }
+  },
+  "variables": {
+    "hasRegistry": "[and(not(empty(parameters('registryServer'))), not(empty(parameters('registryUser'))))]",
+    "registryConfig": "[if(variables('hasRegistry'), createArray(createObject('server', parameters('registryServer'), 'username', parameters('registryUser'), 'passwordSecretRef', 'reg-pass')), createArray())]",
+    "registrySecret": "[if(variables('hasRegistry'), createArray(createObject('name', 'reg-pass', 'value', parameters('registryPassword'))), createArray())]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "serms-web",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 80,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[variables('registrySecret')]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "serms-web",
+              "image": "[parameters('sermsWebImage')]",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 3,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "20"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "serms-api",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8000,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'app-key', 'value', parameters('sermsAppKey')), createObject('name', 'db-password', 'value', parameters('mysqlPassword')), createObject('name', 'jwt-secret', 'value', parameters('jwtSecret')), createObject('name', 'ai-api-key', 'value', parameters('aiServiceApiKey')), createObject('name', 'supabase-key', 'value', parameters('supabaseAccessKey')), createObject('name', 'supabase-secret', 'value', parameters('supabaseSecretKey'))))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "serms-api",
+              "image": "[parameters('sermsApiImage')]",
+              "args": [
+                "php",
+                "artisan",
+                "serve",
+                "--host=0.0.0.0",
+                "--port=8000",
+                "--no-reload"
+              ],
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "env": [
+                {
+                  "name": "APP_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "APP_DEBUG",
+                  "value": "false"
+                },
+                {
+                  "name": "APP_KEY",
+                  "secretRef": "app-key"
+                },
+                {
+                  "name": "DB_CONNECTION",
+                  "value": "mysql"
+                },
+                {
+                  "name": "DB_HOST",
+                  "value": "[parameters('mysqlHost')]"
+                },
+                {
+                  "name": "DB_PORT",
+                  "value": "[parameters('mysqlPort')]"
+                },
+                {
+                  "name": "DB_DATABASE",
+                  "value": "serms"
+                },
+                {
+                  "name": "DB_USERNAME",
+                  "value": "root"
+                },
+                {
+                  "name": "DB_PASSWORD",
+                  "secretRef": "db-password"
+                },
+                {
+                  "name": "REDIS_HOST",
+                  "value": "[parameters('redisHost')]"
+                },
+                {
+                  "name": "REDIS_PORT",
+                  "value": "[parameters('redisPort')]"
+                },
+                {
+                  "name": "CACHE_STORE",
+                  "value": "redis"
+                },
+                {
+                  "name": "QUEUE_CONNECTION",
+                  "value": "database"
+                },
+                {
+                  "name": "SERMS_SERVICE_ROLE",
+                  "value": "api"
+                },
+                {
+                  "name": "AUTH_SERVICE_URL",
+                  "value": "[parameters('authServiceUrl')]"
+                },
+                {
+                  "name": "JWT_SECRET",
+                  "secretRef": "jwt-secret"
+                },
+                {
+                  "name": "JWT_PUBLIC_KEY_PATH",
+                  "value": "storage/oauth-public.key"
+                },
+                {
+                  "name": "AI_SERVICE_URL",
+                  "value": "[parameters('aiServiceUrl')]"
+                },
+                {
+                  "name": "AI_SERVICE_API_KEY",
+                  "secretRef": "ai-api-key"
+                },
+                {
+                  "name": "AI_SERVICE_TIMEOUT",
+                  "value": "10"
+                },
+                {
+                  "name": "SUPABASE_STORAGE_DRIVER",
+                  "value": "s3"
+                },
+                {
+                  "name": "SUPABASE_URL",
+                  "value": "[parameters('supabaseUrl')]"
+                },
+                {
+                  "name": "SUPABASE_REGION",
+                  "value": "[parameters('supabaseRegion')]"
+                },
+                {
+                  "name": "SUPABASE_BUCKET",
+                  "value": "[parameters('supabaseBucket')]"
+                },
+                {
+                  "name": "SUPABASE_ENDPOINT",
+                  "value": "[parameters('supabaseEndpoint')]"
+                },
+                {
+                  "name": "SUPABASE_ACCESS_KEY_ID",
+                  "secretRef": "supabase-key"
+                },
+                {
+                  "name": "SUPABASE_SECRET_ACCESS_KEY",
+                  "secretRef": "supabase-secret"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "20"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "serms-worker",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'app-key', 'value', parameters('sermsAppKey')), createObject('name', 'db-password', 'value', parameters('mysqlPassword')), createObject('name', 'jwt-secret', 'value', parameters('jwtSecret')), createObject('name', 'ai-api-key', 'value', parameters('aiServiceApiKey')), createObject('name', 'supabase-key', 'value', parameters('supabaseAccessKey')), createObject('name', 'supabase-secret', 'value', parameters('supabaseSecretKey'))))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "serms-worker",
+              "image": "[parameters('sermsApiImage')]",
+              "command": [
+                "php"
+              ],
+              "args": [
+                "artisan",
+                "queue:work",
+                "--sleep=3",
+                "--tries=3"
+              ],
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              },
+              "env": [
+                {
+                  "name": "APP_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "APP_KEY",
+                  "secretRef": "app-key"
+                },
+                {
+                  "name": "DB_HOST",
+                  "value": "[parameters('mysqlHost')]"
+                },
+                {
+                  "name": "DB_PORT",
+                  "value": "[parameters('mysqlPort')]"
+                },
+                {
+                  "name": "DB_DATABASE",
+                  "value": "serms"
+                },
+                {
+                  "name": "DB_USERNAME",
+                  "value": "root"
+                },
+                {
+                  "name": "DB_PASSWORD",
+                  "secretRef": "db-password"
+                },
+                {
+                  "name": "REDIS_HOST",
+                  "value": "[parameters('redisHost')]"
+                },
+                {
+                  "name": "QUEUE_CONNECTION",
+                  "value": "database"
+                },
+                {
+                  "name": "SERMS_SERVICE_ROLE",
+                  "value": "worker"
+                },
+                {
+                  "name": "AUTH_SERVICE_URL",
+                  "value": "[parameters('authServiceUrl')]"
+                },
+                {
+                  "name": "JWT_SECRET",
+                  "secretRef": "jwt-secret"
+                },
+                {
+                  "name": "AI_SERVICE_URL",
+                  "value": "[parameters('aiServiceUrl')]"
+                },
+                {
+                  "name": "AI_SERVICE_API_KEY",
+                  "secretRef": "ai-api-key"
+                },
+                {
+                  "name": "SUPABASE_ACCESS_KEY_ID",
+                  "secretRef": "supabase-key"
+                },
+                {
+                  "name": "SUPABASE_SECRET_ACCESS_KEY",
+                  "secretRef": "supabase-secret"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "sermsWebFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'serms-web'), '2024-03-01').configuration.ingress.fqdn]"
+    },
+    "sermsApiFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'serms-api'), '2024-03-01').configuration.ingress.fqdn]"
+    }
+  }
+}

@@ -1,0 +1,347 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "15513477259398573730"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Region — must match the Managed Environment region."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Managed Environment ID."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas. 0 = serverless scale-to-zero, 1 = warm."
+      }
+    },
+    "registryServer": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryUser": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "ocrApiImage": {
+      "type": "string"
+    },
+    "ocrWorkerImage": {
+      "type": "string"
+    },
+    "ocrOllamaImage": {
+      "type": "string"
+    },
+    "sermsApiKey": {
+      "type": "securestring"
+    },
+    "prsApiKey": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "postgresPassword": {
+      "type": "securestring"
+    },
+    "redisHost": {
+      "type": "string"
+    },
+    "redisPort": {
+      "type": "string",
+      "defaultValue": "6379"
+    },
+    "postgresHost": {
+      "type": "string"
+    },
+    "postgresPort": {
+      "type": "string",
+      "defaultValue": "5432"
+    },
+    "mongoHost": {
+      "type": "string"
+    },
+    "mongoPort": {
+      "type": "string",
+      "defaultValue": "27017"
+    }
+  },
+  "variables": {
+    "hasRegistry": "[and(not(empty(parameters('registryServer'))), not(empty(parameters('registryUser'))))]",
+    "registryConfig": "[if(variables('hasRegistry'), createArray(createObject('server', parameters('registryServer'), 'username', parameters('registryUser'), 'passwordSecretRef', 'reg-pass')), createArray())]",
+    "registrySecret": "[if(variables('hasRegistry'), createArray(createObject('name', 'reg-pass', 'value', parameters('registryPassword'))), createArray())]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "ocr-ollama",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "targetPort": 11434,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[variables('registrySecret')]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "ocr-ollama",
+              "image": "[parameters('ocrOllamaImage')]",
+              "resources": {
+                "cpu": "[json('1.0')]",
+                "memory": "2.0Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 1,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "5"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "ocr-api",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8010,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'serms-api-key', 'value', parameters('sermsApiKey')), createObject('name', 'prs-api-key', 'value', parameters('prsApiKey')), createObject('name', 'callback-api-key', 'value', parameters('sermsApiKey')), createObject('name', 'pg-password', 'value', parameters('postgresPassword'))))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "ocr-api",
+              "image": "[parameters('ocrApiImage')]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "env": [
+                {
+                  "name": "APP_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "SERMS_API_KEY",
+                  "secretRef": "serms-api-key"
+                },
+                {
+                  "name": "PRS_API_KEY",
+                  "secretRef": "prs-api-key"
+                },
+                {
+                  "name": "CALLBACK_API_KEY",
+                  "secretRef": "callback-api-key"
+                },
+                {
+                  "name": "OLLAMA_BASE_URL",
+                  "value": "[format('http://{0}', reference(resourceId('Microsoft.App/containerApps', 'ocr-ollama'), '2024-03-01').configuration.ingress.fqdn)]"
+                },
+                {
+                  "name": "OLLAMA_MODEL",
+                  "value": "qwen2.5:1.5b"
+                },
+                {
+                  "name": "REDIS_URL",
+                  "value": "[format('redis://{0}:{1}/0', parameters('redisHost'), parameters('redisPort'))]"
+                },
+                {
+                  "name": "MONGODB_URL",
+                  "value": "[format('mongodb://{0}:{1}', parameters('mongoHost'), parameters('mongoPort'))]"
+                },
+                {
+                  "name": "MONGODB_DATABASE",
+                  "value": "ocr_pipeline"
+                },
+                {
+                  "name": "POSTGRES_URL",
+                  "value": "[format('postgresql+asyncpg://ocr_user:{0}@{1}:{2}/ocr_pipeline', parameters('postgresPassword'), parameters('postgresHost'), parameters('postgresPort'))]"
+                },
+                {
+                  "name": "EMBEDDING_MODEL",
+                  "value": "all-MiniLM-L6-v2"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "http-scaler",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "10"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/containerApps', 'ocr-ollama')]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "ocr-worker",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "registries": "[variables('registryConfig')]",
+          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'serms-api-key', 'value', parameters('sermsApiKey')), createObject('name', 'prs-api-key', 'value', parameters('prsApiKey')), createObject('name', 'callback-api-key', 'value', parameters('sermsApiKey')), createObject('name', 'pg-password', 'value', parameters('postgresPassword'))))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "ocr-worker",
+              "image": "[parameters('ocrWorkerImage')]",
+              "command": [
+                "celery"
+              ],
+              "args": [
+                "-A",
+                "app.tasks.celery_app",
+                "worker",
+                "--loglevel=info"
+              ],
+              "resources": {
+                "cpu": "[json('1.0')]",
+                "memory": "2.0Gi"
+              },
+              "env": [
+                {
+                  "name": "APP_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "SERMS_API_KEY",
+                  "secretRef": "serms-api-key"
+                },
+                {
+                  "name": "PRS_API_KEY",
+                  "secretRef": "prs-api-key"
+                },
+                {
+                  "name": "CALLBACK_API_KEY",
+                  "secretRef": "callback-api-key"
+                },
+                {
+                  "name": "OLLAMA_BASE_URL",
+                  "value": "[format('http://{0}', reference(resourceId('Microsoft.App/containerApps', 'ocr-ollama'), '2024-03-01').configuration.ingress.fqdn)]"
+                },
+                {
+                  "name": "OLLAMA_MODEL",
+                  "value": "qwen2.5:1.5b"
+                },
+                {
+                  "name": "REDIS_URL",
+                  "value": "[format('redis://{0}:{1}/0', parameters('redisHost'), parameters('redisPort'))]"
+                },
+                {
+                  "name": "MONGODB_URL",
+                  "value": "[format('mongodb://{0}:{1}', parameters('mongoHost'), parameters('mongoPort'))]"
+                },
+                {
+                  "name": "MONGODB_DATABASE",
+                  "value": "ocr_pipeline"
+                },
+                {
+                  "name": "POSTGRES_URL",
+                  "value": "[format('postgresql+asyncpg://ocr_user:{0}@{1}:{2}/ocr_pipeline', parameters('postgresPassword'), parameters('postgresHost'), parameters('postgresPort'))]"
+                },
+                {
+                  "name": "OMP_NUM_THREADS",
+                  "value": "1"
+                },
+                {
+                  "name": "OMP_THREAD_LIMIT",
+                  "value": "1"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "celery-scaler",
+                "custom": {
+                  "type": "redis",
+                  "metadata": {
+                    "address": "[format('{0}:{1}', parameters('redisHost'), parameters('redisPort'))]",
+                    "listName": "celery",
+                    "listLength": "1"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/containerApps', 'ocr-ollama')]"
+      ]
+    }
+  ],
+  "outputs": {
+    "ocrApiFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'ocr-api'), '2024-03-01').configuration.ingress.fqdn]"
+    },
+    "ocrOllamaFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'ocr-ollama'), '2024-03-01').configuration.ingress.fqdn]"
+    }
+  }
+}

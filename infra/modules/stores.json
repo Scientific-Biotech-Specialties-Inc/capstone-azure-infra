@@ -1,0 +1,274 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "18370978432320197141"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Region — must match the Managed Environment region."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Managed Environment ID."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Minimum replicas. 1 = always running, 0 = scale to zero."
+      }
+    },
+    "mysqlRootPassword": {
+      "type": "securestring"
+    },
+    "postgresPassword": {
+      "type": "securestring"
+    },
+    "mysqlImage": {
+      "type": "string",
+      "defaultValue": "docker.io/library/mysql:8.0"
+    },
+    "redisImage": {
+      "type": "string",
+      "defaultValue": "docker.io/library/redis:7-alpine"
+    },
+    "postgresImage": {
+      "type": "string",
+      "defaultValue": "docker.io/pgvector/pgvector:pg16"
+    },
+    "mongoImage": {
+      "type": "string",
+      "defaultValue": "docker.io/library/mongo:7"
+    },
+    "storageEnabled": {
+      "type": "bool",
+      "defaultValue": true
+    },
+    "storageName": {
+      "type": "string",
+      "defaultValue": "db-backups-storage"
+    }
+  },
+  "variables": {
+    "volumeConfig": "[if(parameters('storageEnabled'), createArray(createObject('name', 'backup-vol', 'storageType', 'AzureFile', 'storageName', parameters('storageName'))), createArray())]",
+    "volumeMountsConfig": "[if(parameters('storageEnabled'), createArray(createObject('volumeName', 'backup-vol', 'mountPath', '/backups')), createArray())]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "shared-mysql",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "targetPort": 3306,
+            "transport": "tcp",
+            "exposedPort": 3306
+          },
+          "secrets": [
+            {
+              "name": "root-password",
+              "value": "[parameters('mysqlRootPassword')]"
+            }
+          ]
+        },
+        "template": {
+          "volumes": "[variables('volumeConfig')]",
+          "containers": [
+            {
+              "name": "shared-mysql",
+              "image": "[parameters('mysqlImage')]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "env": [
+                {
+                  "name": "MYSQL_ROOT_PASSWORD",
+                  "secretRef": "root-password"
+                },
+                {
+                  "name": "MYSQL_DATABASE",
+                  "value": "serms"
+                },
+                {
+                  "name": "MYSQL_USER",
+                  "value": "serms_user"
+                },
+                {
+                  "name": "MYSQL_PASSWORD",
+                  "secretRef": "root-password"
+                }
+              ],
+              "volumeMounts": "[variables('volumeMountsConfig')]"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "shared-redis",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "targetPort": 6379,
+            "transport": "tcp",
+            "exposedPort": 6379
+          }
+        },
+        "template": {
+          "volumes": "[variables('volumeConfig')]",
+          "containers": [
+            {
+              "name": "shared-redis",
+              "image": "[parameters('redisImage')]",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              },
+              "volumeMounts": "[variables('volumeMountsConfig')]"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "shared-postgres",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "targetPort": 5432,
+            "transport": "tcp",
+            "exposedPort": 5432
+          },
+          "secrets": [
+            {
+              "name": "pg-password",
+              "value": "[parameters('postgresPassword')]"
+            }
+          ]
+        },
+        "template": {
+          "volumes": "[variables('volumeConfig')]",
+          "containers": [
+            {
+              "name": "shared-postgres",
+              "image": "[parameters('postgresImage')]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "env": [
+                {
+                  "name": "POSTGRES_USER",
+                  "value": "ocr_user"
+                },
+                {
+                  "name": "POSTGRES_PASSWORD",
+                  "secretRef": "pg-password"
+                },
+                {
+                  "name": "POSTGRES_DB",
+                  "value": "ocr_pipeline"
+                }
+              ],
+              "volumeMounts": "[variables('volumeMountsConfig')]"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "shared-mongo",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "transport": "tcp",
+            "targetPort": 27017,
+            "exposedPort": 27017,
+            "external": false
+          }
+        },
+        "template": {
+          "volumes": "[variables('volumeConfig')]",
+          "containers": [
+            {
+              "name": "shared-mongo",
+              "image": "[parameters('mongoImage')]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "volumeMounts": "[variables('volumeMountsConfig')]"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 1
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "mysqlFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-mysql'), '2024-03-01').configuration.ingress.fqdn]"
+    },
+    "redisFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-redis'), '2024-03-01').configuration.ingress.fqdn]"
+    },
+    "postgresFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-postgres'), '2024-03-01').configuration.ingress.fqdn]"
+    },
+    "mongoFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-mongo'), '2024-03-01').configuration.ingress.fqdn]"
+    }
+  }
+}

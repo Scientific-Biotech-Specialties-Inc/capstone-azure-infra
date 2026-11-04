@@ -1,94 +1,129 @@
 # capstone-azure-infra
 
-Infrastructure as Code for deploying the **three capstone microservices** to
-**Microsoft Azure Container Apps** — budget-oriented for Azure for Students
-credits, a short-lived presentation, and ephemeral data.
+Infrastructure as Code for deploying the capstone microservices and subgroup systems to **Microsoft Azure Container Apps (ACA)** — optimized for **$100 Azure for Students** subscriptions with **serverless scale-to-zero**, **zero-edit account rotation**, and **per-subgroup self-service deployment (Mode 1)** across the `Scientific-Biotech-Specialties-Inc` GitHub Organization.
 
-Deploys **SERMS** (`smart-expense-management-system`), **capstone-auth-module**
-(the reverse-proxy front door), and **ocr-pipeline** (OCR + local LLM).
-**PRS / CMS / TS are not deployed** — their auth-proxy routes return 503.
-
-```
-README                             root
+```text
+README.md                             root
+├── config/
+│   └── deploy.config.json            central non-secret deployment config & subgroup URLs
 ├── infra/
-│   ├── main.bicep                 ACR + Managed Environment
-│   ├── apps.bicep                 14 container apps + secret wiring
-│   └── parameters.prod.json       non-secret config
-├── containers/mysql/              pre-builds the shared MySQL (capstone_auth DB)
+│   ├── main.bicep                    environment, storage account (Azure Files), optional ACR
+│   ├── apps.bicep                    modular orchestrator for all apps
+│   └── modules/
+│       ├── stores.bicep              shared MySQL, Redis, Postgres, MongoDB with persistent backup mount
+│       ├── auth.bicep                auth-proxy (front door), auth-web, auth-api, auth-worker
+│       ├── serms.bicep               serms-web, serms-api, serms-worker
+│       ├── ocr.bicep                 ocr-api, ocr-worker (KEDA Redis scaler), ocr-ollama
+│       ├── prs.bicep                 prs-web, prs-api
+│       ├── cms.bicep                 cms-web + 6 CMS backend microservices (0.25 vCPU each)
+│       └── ticketing.bicep           ticketing-web, ticketing-gateway
 ├── scripts/
-│   ├── deploy.ps1                 one-command deploy
-│   └── teardown.ps1               delete everything
-├── secrets.example.json           → copy to secrets.prod.json (git-ignored)
-└── .github/workflows/             optional CI deploy
+│   ├── deploy.ps1                    one-command modular deploy, account switch & gateway sync
+│   ├── scale.ps1                     fast power switch (Serverless | WarmDemo | SleepAll)
+│   └── teardown.ps1                  delete resource group
+├── secrets.example.json              → copy to secrets.prod.json (git-ignored)
+└── .github/workflows/
+    ├── deploy-infra.yml              modular GitHub Actions deployment workflow
+    └── publish-ghcr.yml              reusable GHCR container build workflow
 ```
 
-## Architecture
+---
 
-All apps live in **one** ACA Managed Environment (Consumption tier).
+## Architecture & Subgroup Federation
 
-| App | Runs | Port |
-|-----|------|------|
-| `auth-proxy` | nginx **front door** — routes `/`, `/serms`, `/api/serms`, `/api` | 5173 |
-| `auth-web` | auth module Vue login/admin UI | 5000 |
-| `auth-api` / `auth-worker` | capstone Laravel API + Redis queue | 8000 |
-| `serms-web` | static Vue bundle served by nginx | 80 |
-| `serms-api` / `serms-worker` | SERMS Laravel API + DB-backed queue | 8000 |
-| `ocr-api` / `ocr-worker` | FastAPI + Celery/Tesseract | 8010 |
-| `ocr-ollama` | qwen2.5:1.5b local LLM (demo highlight) | 11434 |
-| `shared-mysql` / `shared-redis` / `shared-postgres` / `shared-mongo` | stores (ephemeral) | 3306/6379/5432/27017 |
+The primary gateway (`auth-proxy` Nginx reverse proxy) presents a **single unified URL** to panelists and users, while allowing subgroups to deploy either in the **same** subscription or on **their own separate $100 student accounts**:
 
-Front door URL after deploy:
+| Service Path | Subsystem | Target Port | Deployment Option |
+|--------------|-----------|-------------|-------------------|
+| `/` | **Auth Web** (Vue admin UI / login) | 5000 | In-Cluster (`-Module auth` / `core`) |
+| `/api/` | **Auth API** (Laravel REST API) | 8000 | In-Cluster (`-Module auth` / `core`) |
+| `/serms/` | **SERMS Web** (Vue frontend) | 80 | In-Cluster (`-Module serms` / `core`) |
+| `/api/serms/` | **SERMS API** (Laravel REST API) | 8000 | In-Cluster (`-Module serms` / `core`) |
+| — | **OCR Pipeline** (FastAPI, Celery, Ollama) | 8010/11434 | In-Cluster (`-Module ocr` / `core`) |
+| `/prs/` & `/api/prs/` | **PRS** (Productivity Report System) | 5003 / 8000 | In-Cluster or Separate Student Account (`-Module prs`) |
+| `/cms/` & `/api/(vendor\|contract\|...)` | **CMS** (Contract Management) | 5001 / 8000 | In-Cluster or Separate Student Account (`-Module cms`) |
+| `/ticketing/` & `/api/ticketing/` | **Ticketing System** (TS) | 5005 / 80 | In-Cluster or Separate Student Account (`-Module ticketing`) |
 
-- SERMS app: `https://auth-proxy.<env>.<region>.azurecontainerapps.io/serms`
-- Auth admin: `https://auth-proxy.<env>.<region>.azurecontainerapps.io`
+---
 
-## Cost posture
+## 1. Quickstart: Core Deployment
 
-- No Front Door / App Gateway / managed DBs / Key Vault.
-- ACA free-tier compute allowance; scale-to-zero via `-MinReplicas 0`.
-- Data stores are **ephemeral** — a redeploy/scale-down loses data (accepted
-  for a short presentation).
-- Always **tear down** after presenting.
+### Prerequisites
+1. Azure CLI (`az`) installed
+2. Copy `secrets.example.json` → `secrets.prod.json` and populate secrets (shared JWT secret, encryption keys, passwords)
 
-## One-command deploy (recommended)
-
-1. Install Azure CLI → `az login`
-2. Copy `secrets.example.json` → `secrets.prod.json` and fill in real values
-   (JWT secret, 32-char `internalEncryptionKey`, APP_KEYs, DB passwords,
-   Supabase keys, shared AI callback key). This file is git-ignored.
-3. Ensure the sibling app repos already have their deploy artifacts:
-   - `smart-expense-management-system/apps/web/Dockerfile.prod`
-   - `capstone-auth-module/deploy/nginx.Dockerfile`
-   - `ocr-pipeline/Dockerfile.ollama`
-4. Run:
-   ```powershell
-   .\scripts\deploy.ps1
-   ```
-
-The script creates the RG, ACR + environment, scaffolds the 14 apps with secrets,
-then builds & pushes the 8 images with `az acr build` (using the real auth-proxy
-FQDN for the SERMS web bundle), rolls each app onto its image, and prints the
-front-door URL.
-
-## Validate Bicep (before pushing)
+### Deploy Core Stack (Auth + SERMS + OCR + Stores)
 ```powershell
-az bicep build -f infra/apps.bicep
-az bicep build -f infra/main.bicep
+.\scripts\deploy.ps1 -Module core -ScaleMode Serverless
 ```
+By default, this sets `minReplicas = 0` for all Web/APIs (scaling down when idle to preserve the $100 credit), while databases stay persistent.
 
-## Teardown (critical — spend control)
+---
+
+## 2. Subgroup Self-Service Deployment (Mode 1)
+
+When another subgroup (PRS, CMS, or Ticketing) wants to deploy on **their own $100 Azure for Students account**:
+
+1. They clone `capstone-azure-infra` and place the shared `secrets.prod.json`.
+2. They run:
+   ```powershell
+   az login
+   .\scripts\deploy.ps1 -Module prs -ScaleMode Serverless
+   # Or for CMS:
+   .\scripts\deploy.ps1 -Module cms -ScaleMode Serverless
+   # Or for Ticketing:
+   .\scripts\deploy.ps1 -Module ticketing -ScaleMode Serverless
+   ```
+3. The script automatically updates their generated `.azurecontainerapps.io` URLs in `config/deploy.config.json`.
+4. Commit/share the updated `config/deploy.config.json` with the core maintainer, who runs:
+   ```powershell
+   .\scripts\deploy.ps1 -SyncProxy
+   ```
+   In ~15 seconds, the primary front door immediately routes `/prs`, `/cms`, or `/ticketing` to their live containers!
+
+---
+
+## 3. Switching Azure Accounts ($100 Credit Exhaustion)
+
+When an account runs out of the $100 student credit:
+```powershell
+.\scripts\deploy.ps1 -SwitchAccount
+```
+- Or if helping a classmate deploy from your machine without knowing their password:
+  ```powershell
+  .\scripts\deploy.ps1 -SwitchAccount -UseDeviceCode
+  ```
+Because Azure resource names (`acrName`, `storageAccountName`) are deterministically generated via `uniqueString()`, **you do not need to change any configuration names**. The script automatically registers required resource providers on the new subscription and deploys in minutes.
+
+---
+
+## 4. Power & Cost Management (`scale.ps1`)
+
+Control your running costs instantly without deleting resources:
+
+- **Serverless (Default / Low Burn):**
+  ```powershell
+  .\scripts\scale.ps1 -Mode Serverless
+  ```
+  Web & APIs scale to 0 when idle ($0 compute burn). DBs stay at 1.
+
+- **Warm for Demo (10 mins before presentation):**
+  ```powershell
+  .\scripts\scale.ps1 -Mode WarmDemo
+  ```
+  Pre-warms all active apps and `ocr-ollama` to `minReplicas: 1` for zero latency and instant response.
+
+- **Sleep All ($0.00/hr burn overnight):**
+  ```powershell
+  .\scripts\scale.ps1 -Mode SleepAll
+  ```
+  Scales **every container** (including DBs and Ollama) to 0.
+
+---
+
+## 5. Teardown
+
+To completely wipe resources from an expired student account:
 ```powershell
 .\scripts\teardown.ps1 -Resource rg-capstone
 ```
-
-## Troubleshooting
-
-- **Ollama slow first call / model pull** — the ~1 GB model downloads on first
-  start. Keep `ocr-ollama` at `minReplicas 1` and run a warm-up OCR **before**
-  presenting.
-- **Stores share public ingress** (no private VNet on the free tier) — random
-  names + immediate teardown mitigates risk. Post-demo hardening = managed DBs
-  private VNet.
-- **Migrations** — SERMS runs `migrate` at API boot; the worker is overridden to
-  `queue:work` and does not migrate. If you see duplicate-migration errors,
-  delete the RG and redeploy.
