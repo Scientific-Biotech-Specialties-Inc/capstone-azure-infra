@@ -135,6 +135,7 @@ resource sermsApi 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DB_PASSWORD', secretRef: 'db-password' }
             { name: 'REDIS_HOST', value: redisHost }
             { name: 'REDIS_PORT', value: redisPort }
+            { name: 'REDIS_CLIENT', value: 'predis' }
             { name: 'CACHE_STORE', value: 'redis' }
             { name: 'QUEUE_CONNECTION', value: 'database' }
             { name: 'SERMS_SERVICE_ROLE', value: 'api' }
@@ -200,12 +201,16 @@ resource sermsWorker 'Microsoft.App/containerApps@2024-03-01' = {
           env: [
             { name: 'APP_ENV', value: 'production' }
             { name: 'APP_KEY', secretRef: 'app-key' }
+            { name: 'DB_CONNECTION', value: 'mysql' }
             { name: 'DB_HOST', value: mysqlHost }
             { name: 'DB_PORT', value: mysqlPort }
             { name: 'DB_DATABASE', value: 'serms' }
             { name: 'DB_USERNAME', value: 'root' }
             { name: 'DB_PASSWORD', secretRef: 'db-password' }
             { name: 'REDIS_HOST', value: redisHost }
+            { name: 'REDIS_PORT', value: redisPort }
+            { name: 'REDIS_CLIENT', value: 'predis' }
+            { name: 'CACHE_STORE', value: 'redis' }
             { name: 'QUEUE_CONNECTION', value: 'database' }
             { name: 'SERMS_SERVICE_ROLE', value: 'worker' }
             { name: 'AUTH_SERVICE_URL', value: authServiceUrl }

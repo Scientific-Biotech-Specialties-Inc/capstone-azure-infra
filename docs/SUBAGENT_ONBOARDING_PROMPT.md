@@ -35,6 +35,11 @@ Do as much as possible yourself. Stop and ask the human only where this prompt s
 5. The maintainer is @Zanti00. Anything that needs Azure-side or org-admin access is a handoff
    to @Zanti00. Do not try to work around it.
 6. Do not modify the capstone-azure-infra repository. You only change THIS repository.
+7. Human-in-the-Loop Protocol: Whenever an action requires human intervention (e.g. CLI installation
+   approval, browser login/2FA, organization permission adjustments, reviewing diffs, or committing
+   to git), DO NOT hang, guess, or proceed blindly. Prompt the human immediately with clear, numbered,
+   step-by-step instructions (including exact URLs, terminal commands, or UI menus) and explicitly state
+   what input or confirmation you are waiting for before continuing.
 
 # FIXED FACTS (do not change these)
 - GitHub org:            Scientific-Biotech-Specialties-Inc

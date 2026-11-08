@@ -1,7 +1,8 @@
 # Azure Student Account Rotation Runbook ($100 Credit Renewal)
 
-> **Audience:** DevOps Engineers, Team Leads, and AI Subagents  
-> **Frequency:** Executed whenever an active Azure for Students $100 credit limit is reached or expires.
+> **Audience:** DevOps Engineers, Team Leads, and AI Subagents (`@account-rotator`)  
+> **Frequency:** Executed whenever an active Azure for Students $100 credit limit is reached or expires.  
+> **Automated Subagent Prompt:** For full autonomous execution via an AI agent, use [`docs/ACCOUNT_ROTATION_SUBAGENT_PROMPT.md`](ACCOUNT_ROTATION_SUBAGENT_PROMPT.md) or local subagent [`.agents/agents/account-rotator.md`](../.agents/agents/account-rotator.md).
 
 ---
 
@@ -12,6 +13,10 @@ Because all Azure resource names (`acrName`, `storageAccountName`) are determini
 uniqueString(subscription().subscriptionId, resourceGroup().id)
 ```
 You **never need to invent new resource names or edit Bicep parameters** when switching to a fresh student subscription.
+
+> [!IMPORTANT]
+> **Human-in-the-Loop Protocol for AI Agents:**  
+> When an AI subagent executes this runbook, all steps requiring real human action (activating academic benefits, browser device login, updating GitHub organization secrets, and confirming old resource destruction) MUST halt and provide the human with clear, numbered, step-by-step instructions before proceeding.
 
 ---
 
@@ -77,7 +82,18 @@ az containerapp exec -n "serms-api" -g "rg-capstone" --command "php artisan migr
 
 ---
 
+### Step 3b: Update GitHub Organization Secrets (CI/CD)
+If the team deploys via GitHub Actions, the maintainer (**@Zanti00**) must update the organization secrets to point to the new subscription:
+1. Navigate to: `https://github.com/organizations/Scientific-Biotech-Specialties-Inc/settings/secrets/actions`
+2. Update `AZURE_SUBSCRIPTION_ID` to the new subscription ID.
+3. Update `AZURE_TENANT_ID` (if switching student tenants).
+
+---
+
 ## 4. Post-Rotation Teardown of the Old Subscription
+
+> [!CAUTION]
+> **Safety Gate:** Verify that the new deployment front-door is responding with HTTP 200 on all routes before deleting the previous subscription's resources.
 
 Once the new deployment is verified, tear down the expired subscription to prevent any residual resource lock:
 ```powershell

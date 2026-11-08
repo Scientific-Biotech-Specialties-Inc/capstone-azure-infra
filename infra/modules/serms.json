@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "185570450006620865"
+      "templateHash": "789901580332928729"
     }
   },
   "parameters": {
@@ -236,6 +236,10 @@
                   "value": "[parameters('redisPort')]"
                 },
                 {
+                  "name": "REDIS_CLIENT",
+                  "value": "predis"
+                },
+                {
                   "name": "CACHE_STORE",
                   "value": "redis"
                 },
@@ -363,6 +367,10 @@
                   "secretRef": "app-key"
                 },
                 {
+                  "name": "DB_CONNECTION",
+                  "value": "mysql"
+                },
+                {
                   "name": "DB_HOST",
                   "value": "[parameters('mysqlHost')]"
                 },
@@ -385,6 +393,18 @@
                 {
                   "name": "REDIS_HOST",
                   "value": "[parameters('redisHost')]"
+                },
+                {
+                  "name": "REDIS_PORT",
+                  "value": "[parameters('redisPort')]"
+                },
+                {
+                  "name": "REDIS_CLIENT",
+                  "value": "predis"
+                },
+                {
+                  "name": "CACHE_STORE",
+                  "value": "redis"
                 },
                 {
                   "name": "QUEUE_CONNECTION",
