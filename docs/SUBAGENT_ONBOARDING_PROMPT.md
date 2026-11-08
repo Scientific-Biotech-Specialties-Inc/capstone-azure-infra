@@ -58,16 +58,14 @@ Do as much as possible yourself. Stop and ask the human only where this prompt s
 | PRS       | prs-web                                                  | prs-web             | 5003           | /prs/                             |
 | PRS       | prs-api                                                  | prs-api             | 8000           | /api/prs/                         |
 | CMS       | cms-web                                                  | cms-web             | 5001           | /cms/                             |
-| CMS       | vendor-management, contract-management, search,          | cms-backend         | 8000           | /api/vendor/, /api/contract/,     |
-|           | notification, ai-service, analytics-service              | (ONE shared image)  |                | /api/search/, /api/notification/, |
+| CMS       | vendor-management, contract-management, search,          | cms-<app-name>      | 8000           | /api/vendor/, /api/contract/,     |
+|           | notification, ai-service, analytics-service              | (one per app)       |                | /api/search/, /api/notification/, |
 |           |                                                          |                     |                | /api/ai/, /api/analytics/         |
 | Ticketing | ticketing-web                                            | ticketing-web       | 5005           | /ticketing/                       |
 | Ticketing | ticketing-gateway                                        | ticketing-gateway   | 80             | /api/ticketing/, /storage/        |
 
-CMS note: all six CMS backend apps run the SAME `cms-backend` image and are told apart by the
-SERVICE_NAME env var (e.g. SERVICE_NAME=vendor-management) plus their own DB_DATABASE. If this repo
-has six separate backend codebases instead of one image, STOP and report that to the human as a
-handoff to @Zanti00. The infra currently expects one shared image.
+CMS note: all six backend apps have independent codebases and images, e.g.
+`cms-vendor-management`. Use the CMS repository's `.github/workflows/deploy.yml`.
 
 Resource sizing in Azure is small (0.25–0.5 vCPU, 0.5–1 GiB). Flag anything that obviously
 needs more (e.g. large ML models loaded at boot).
@@ -193,13 +191,13 @@ jobs:
 
 Rules for this file:
 - Deploy the SHA tag, never `latest`, so every revision can be traced and rolled back.
-- CMS backend: build `cms-backend` once, then loop over all six app names from the contract table.
+- CMS: use the existing workflow's seven-image build matrix and preserve its rollout gate.
 - If the repo already has tests or lint, add a `test` job and make the deploy jobs `needs: test`.
   Don't invent a test suite.
 - Frontend build args (e.g. VITE_*) must be non-secret values only.
 - Reference: the canonical templates live in
   Scientific-Biotech-Specialties-Inc/capstone-azure-infra/.github/workflows/templates/
-  (prs-deploy.yml, cms-deploy.yml, ticketing-deploy.yml). Read them if you have access, but the
+  (prs-deploy.yml, ticketing-deploy.yml). Read them if you have access, but the
   structure above is sufficient on its own.
 
 # PHASE 4: VERIFY (run what's available, report pass/fail for each)
@@ -226,7 +224,7 @@ D) "Handoff to @Zanti00" (include only the items that apply):
    - The first deploy succeeds but the app shows an image pull error in Azure: ask @Zanti00 to grant
      the Azure registry credential read access to the new GHCR package (or make the package visible
      to the org).
-   - Any contract mismatch you could not resolve (e.g. CMS has six separate images).
+   - Any contract mismatch you could not resolve.
 E) This JSON status block, as the last thing in your reply:
 {
   "status": "COMPLETED | BLOCKED | FAILED",

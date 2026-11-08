@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.46.1.21595",
-      "templateHash": "9983452753131613640"
+      "version": "0.49.2.45890",
+      "templateHash": "2766553208265345489"
     }
   },
   "parameters": {
@@ -44,39 +44,75 @@
       "type": "string",
       "defaultValue": "docker.io/library/nginx:alpine"
     },
-    "cmsBackendImage": {
-      "type": "string",
-      "defaultValue": "docker.io/library/nginx:alpine"
+    "cmsBackendImagePrefix": {
+      "type": "string"
+    },
+    "cmsBackendImageTag": {
+      "type": "string"
     },
     "mysqlPassword": {
-      "type": "securestring",
-      "defaultValue": ""
+      "type": "securestring"
     },
     "jwtSecret": {
-      "type": "securestring",
-      "defaultValue": ""
+      "type": "securestring"
     },
-    "internalEncryptionKey": {
+    "internalServiceSecret": {
+      "type": "securestring"
+    },
+    "appKey": {
       "type": "securestring",
-      "defaultValue": ""
+      "minLength": 1
+    },
+    "fieldEncryptionKey": {
+      "type": "securestring",
+      "minLength": 1
+    },
+    "postgresPassword": {
+      "type": "securestring",
+      "minLength": 1
+    },
+    "meilisearchKey": {
+      "type": "securestring",
+      "minLength": 1
     },
     "mysqlHost": {
       "type": "string",
-      "defaultValue": ""
+      "minLength": 1
     },
     "redisHost": {
+      "type": "string",
+      "minLength": 1
+    },
+    "postgresHost": {
+      "type": "string",
+      "minLength": 1
+    },
+    "postgresUsername": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mongoHost": {
+      "type": "string",
+      "minLength": 1
+    },
+    "meilisearchUrl": {
       "type": "string",
       "defaultValue": ""
     },
     "authServiceUrl": {
+      "type": "string"
+    },
+    "defaultDomain": {
       "type": "string",
       "defaultValue": ""
     }
   },
   "variables": {
-    "hasRegistry": "[and(not(empty(parameters('registryServer'))), not(empty(parameters('registryUser'))))]",
+    "hasRegistry": "[and(and(not(empty(parameters('registryServer'))), not(empty(parameters('registryUser')))), not(empty(parameters('registryPassword'))))]",
     "registryConfig": "[if(variables('hasRegistry'), createArray(createObject('server', parameters('registryServer'), 'username', parameters('registryUser'), 'passwordSecretRef', 'reg-pass')), createArray())]",
     "registrySecret": "[if(variables('hasRegistry'), createArray(createObject('name', 'reg-pass', 'value', parameters('registryPassword'))), createArray())]",
+    "internalMeilisearchName": "cms-meilisearch",
+    "activeMeilisearchUrl": "[if(not(empty(parameters('meilisearchUrl'))), parameters('meilisearchUrl'), format('http://{0}:7700', variables('internalMeilisearchName')))]",
     "cmsServices": [
       "vendor-management",
       "contract-management",
@@ -87,6 +123,61 @@
     ]
   },
   "resources": [
+    {
+      "condition": "[empty(parameters('meilisearchUrl'))]",
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('internalMeilisearchName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "targetPort": 7700,
+            "transport": "http",
+            "allowInsecure": true
+          },
+          "secrets": [
+            {
+              "name": "meili-key",
+              "value": "[parameters('meilisearchKey')]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "[variables('internalMeilisearchName')]",
+              "image": "docker.io/getmeili/meilisearch:v1.8",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              },
+              "env": [
+                {
+                  "name": "MEILI_MASTER_KEY",
+                  "secretRef": "meili-key"
+                },
+                {
+                  "name": "MEILI_ENV",
+                  "value": "production"
+                },
+                {
+                  "name": "MEILI_NO_ANALYTICS",
+                  "value": "true"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": 1
+          }
+        }
+      }
+    },
     {
       "type": "Microsoft.App/containerApps",
       "apiVersion": "2024-03-01",
@@ -100,7 +191,7 @@
             "external": true,
             "targetPort": 5001,
             "transport": "http",
-            "allowInsecure": true
+            "allowInsecure": false
           },
           "registries": "[variables('registryConfig')]",
           "secrets": "[variables('registrySecret')]"
@@ -113,7 +204,13 @@
               "resources": {
                 "cpu": "[json('0.25')]",
                 "memory": "0.5Gi"
-              }
+              },
+              "env": [
+                {
+                  "name": "INTERNAL_DOMAIN",
+                  "value": "[if(not(empty(parameters('defaultDomain'))), format('.internal.{0}', parameters('defaultDomain')), '')]"
+                }
+              ]
             }
           ],
           "scale": {
@@ -150,56 +247,34 @@
             "external": true,
             "targetPort": 8000,
             "transport": "http",
-            "allowInsecure": true
+            "allowInsecure": false
           },
           "registries": "[variables('registryConfig')]",
-          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'db-password', 'value', parameters('mysqlPassword')), createObject('name', 'jwt-secret', 'value', parameters('jwtSecret')), createObject('name', 'encryption-key', 'value', parameters('internalEncryptionKey'))))]"
+          "secrets": "[concat(variables('registrySecret'), createArray(createObject('name', 'db-password', 'value', if(equals(variables('cmsServices')[copyIndex()], 'ai-service'), parameters('postgresPassword'), parameters('mysqlPassword'))), createObject('name', 'app-key', 'value', parameters('appKey')), createObject('name', 'jwt-secret', 'value', parameters('jwtSecret')), createObject('name', 'internal-secret', 'value', parameters('internalServiceSecret')), createObject('name', 'field-encryption-key', 'value', parameters('fieldEncryptionKey'))), if(contains(createArray('contract-management', 'search'), variables('cmsServices')[copyIndex()]), createArray(createObject('name', 'meilisearch-key', 'value', parameters('meilisearchKey'))), createArray()))]"
         },
         "template": {
           "containers": [
             {
               "name": "[variables('cmsServices')[copyIndex()]]",
-              "image": "[parameters('cmsBackendImage')]",
+              "image": "[format('{0}cms-{1}:{2}', parameters('cmsBackendImagePrefix'), variables('cmsServices')[copyIndex()], parameters('cmsBackendImageTag'))]",
+              "command": "[if(equals(variables('cmsServices')[copyIndex()], 'ai-service'), createArray('/bin/sh', '-c'), createArray())]",
+              "args": "[if(equals(variables('cmsServices')[copyIndex()], 'ai-service'), createArray('php artisan config:clear 2>/dev/null || true; php artisan migrate --force --no-interaction 2>/dev/null || true; exec php artisan serve --host=0.0.0.0 --port=8000'), createArray())]",
               "resources": {
-                "cpu": "[json('0.25')]",
-                "memory": "0.5Gi"
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
               },
-              "env": [
+              "env": "[concat(createArray(createObject('name', 'APP_ENV', 'value', 'production'), createObject('name', 'APP_KEY', 'secretRef', 'app-key'), createObject('name', 'SERVICE_NAME', 'value', variables('cmsServices')[copyIndex()]), createObject('name', 'DB_CONNECTION', 'value', if(equals(variables('cmsServices')[copyIndex()], 'ai-service'), 'pgsql', 'mysql')), createObject('name', 'DB_HOST', 'value', if(equals(variables('cmsServices')[copyIndex()], 'ai-service'), parameters('postgresHost'), parameters('mysqlHost'))), createObject('name', 'DB_PORT', 'value', if(equals(variables('cmsServices')[copyIndex()], 'ai-service'), '5432', '3306')), createObject('name', 'DB_DATABASE', 'value', format('cms_{0}', replace(variables('cmsServices')[copyIndex()], '-', '_'))), createObject('name', 'DB_USERNAME', 'value', if(equals(variables('cmsServices')[copyIndex()], 'ai-service'), parameters('postgresUsername'), 'root')), createObject('name', 'DB_PASSWORD', 'secretRef', 'db-password'), createObject('name', 'REDIS_HOST', 'value', parameters('redisHost')), createObject('name', 'AUTH_SERVICE_URL', 'value', parameters('authServiceUrl')), createObject('name', 'JWT_SECRET', 'secretRef', 'jwt-secret'), createObject('name', 'INTERNAL_SERVICE_SECRET', 'secretRef', 'internal-secret'), createObject('name', 'FIELD_ENCRYPTION_KEY', 'secretRef', 'field-encryption-key'), createObject('name', 'VENDOR_SERVICE_URL', 'value', 'http://vendor-management/api'), createObject('name', 'CONTRACT_SERVICE_URL', 'value', if(equals(variables('cmsServices')[copyIndex()], 'notification'), 'http://contract-management', 'http://contract-management/api')), createObject('name', 'NOTIFICATION_SERVICE_URL', 'value', 'http://notification/api'), createObject('name', 'AI_SERVICE_URL', 'value', 'http://ai-service/api')), if(contains(createArray('contract-management', 'search'), variables('cmsServices')[copyIndex()]), createArray(createObject('name', 'MEILISEARCH_HOST', 'value', variables('activeMeilisearchUrl')), createObject('name', 'MEILISEARCH_KEY', 'secretRef', 'meilisearch-key')), createArray()), if(contains(createArray('contract-management', 'vendor-management'), variables('cmsServices')[copyIndex()]), createArray(createObject('name', 'MONGODB_URI', 'value', format('mongodb://{0}:27017', parameters('mongoHost')))), createArray()), if(equals(variables('cmsServices')[copyIndex()], 'contract-management'), createArray(createObject('name', 'CLAMD_FAIL_OPEN', 'value', 'true')), createArray()))]",
+              "probes": [
                 {
-                  "name": "APP_ENV",
-                  "value": "production"
-                },
-                {
-                  "name": "SERVICE_NAME",
-                  "value": "[variables('cmsServices')[copyIndex()]]"
-                },
-                {
-                  "name": "DB_HOST",
-                  "value": "[parameters('mysqlHost')]"
-                },
-                {
-                  "name": "DB_DATABASE",
-                  "value": "[format('cms_{0}', replace(variables('cmsServices')[copyIndex()], '-', '_'))]"
-                },
-                {
-                  "name": "DB_PASSWORD",
-                  "secretRef": "db-password"
-                },
-                {
-                  "name": "REDIS_HOST",
-                  "value": "[parameters('redisHost')]"
-                },
-                {
-                  "name": "AUTH_SERVICE_URL",
-                  "value": "[parameters('authServiceUrl')]"
-                },
-                {
-                  "name": "JWT_SECRET",
-                  "secretRef": "jwt-secret"
-                },
-                {
-                  "name": "INTERNAL_ENCRYPTION_KEY",
-                  "secretRef": "encryption-key"
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/up",
+                    "port": 8000
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 24
                 }
               ]
             }

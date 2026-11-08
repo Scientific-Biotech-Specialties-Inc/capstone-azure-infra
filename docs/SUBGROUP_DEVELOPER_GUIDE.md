@@ -286,7 +286,7 @@ jobs:
 ##### Choice B: Turnkey Standalone Templates
 If your repository contains multiple components (e.g. Web frontend + API backend in one repo), copy the pre-built template from `capstone-azure-infra`:
 - **PRS (Web + API):** [`.github/workflows/templates/prs-deploy.yml`](../.github/workflows/templates/prs-deploy.yml)
-- **CMS (Web + Backend):** [`.github/workflows/templates/cms-deploy.yml`](../.github/workflows/templates/cms-deploy.yml)
+- **CMS (web and six backends):** Use [`CMS-Capstone/.github/workflows/deploy.yml`](https://github.com/Scientific-Biotech-Specialties-Inc/CMS-Capstone/blob/main/.github/workflows/deploy.yml).
 - **Ticketing (Web + Gateway):** [`.github/workflows/templates/ticketing-deploy.yml`](../.github/workflows/templates/ticketing-deploy.yml)
 - **Single Service:** [`.github/workflows/templates/subgroup-single-app-deploy.yml`](../.github/workflows/templates/subgroup-single-app-deploy.yml)
 
@@ -294,6 +294,16 @@ If your repository contains multiple components (e.g. Web frontend + API backend
 Paste the full prompt from **[`docs/SUBAGENT_ONBOARDING_PROMPT.md`](SUBAGENT_ONBOARDING_PROMPT.md)** into your agent. It finds your Dockerfiles, aligns ports and paths with the contract, writes `deploy.yml`, verifies the result, and lists anything that needs **@Zanti00**.
 
 ---
+
+### CMS first rollout
+
+1. Keep the `CMS_PRODUCTION_ENABLED` Actions repository variable unset in CMS-Capstone. Run its deploy workflow on `main` to publish all seven GHCR images, then record the run's commit SHA.
+2. Give Azure's GHCR pull credential access to all seven packages. Register the Azure federated credential for `repo:Scientific-Biotech-Specialties-Inc/CMS-Capstone:ref:refs/heads/main` and grant the CMS repo access to the three Azure OIDC organization secrets.
+3. Prepare the five MySQL schemas (`cms_vendor_management`, `cms_contract_management`, `cms_search`, `cms_notification`, `cms_analytics_service`), the pgvector database `cms_ai_service`, and Meilisearch. Enable the `vector` extension in `cms_ai_service` with a privileged database role. Run each service's migrations against its target database before enabling traffic. Set the CMS entries from `secrets.example.json` in the ignored local secrets file, or configure the `CMS_*` settings and `GHCR_USERNAME` / `GHCR_TOKEN` referenced by the central Actions workflow.
+4. Dispatch the central infrastructure workflow with `module=cms` and `cms_image_tag` set to that SHA. The equivalent local command is `./scripts/deploy.ps1 -Module cms -CmsImageTag <sha>`.
+5. Publish the auth-proxy image with CMS routes enabled. Populate the seven CMS upstreams in `config/deploy.config.json` from the deployment outputs, then run `./scripts/deploy.ps1 -SyncProxy`. The local CMS bootstrap writes these upstreams to the config automatically. Smoke-test `/cms/`, an authenticated API route, and the required service dependencies. In CMS-Capstone, set `CMS_PRODUCTION_ENABLED=true` under **Settings → Secrets and variables → Actions → Variables**. Dispatch on `main` with `publish_only` unchecked to verify the rollout.
+
+The workflow deploys the HTTP apps. CMS queue workers, the scheduler, mail delivery, and AI provider credentials require separate runtime setup.
 
 ### 8.2 Subagent Delegation Prompt
 The single maintained prompt lives in [`docs/SUBAGENT_ONBOARDING_PROMPT.md`](SUBAGENT_ONBOARDING_PROMPT.md). It covers PRS, CMS, and Ticketing, so there's no separate per-team prompt to keep in sync.

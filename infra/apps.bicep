@@ -25,6 +25,9 @@ param registryPassword string = ''
 @description('Image tag to deploy. Default latest.')
 param imageTag string = 'latest'
 
+@description('Image tag for CMS images. Set to the published CMS commit SHA for bootstrap.')
+param cmsImageTag string = imageTag
+
 @description('Minimum replicas for Web/API apps. 0 = serverless scale-to-zero, 1 = warm.')
 param minReplicas int = 0
 
@@ -68,6 +71,14 @@ param brevoApiKey string = ''
 param mailPassword string = ''
 @secure()
 param brevoWebhookSecret string = ''
+@secure()
+param cmsAppKey string = ''
+@secure()
+param cmsFieldEncryptionKey string = ''
+@secure()
+param cmsPostgresPassword string = ''
+@secure()
+param cmsMeilisearchKey string = ''
 
 // ---------------------------------------------------------------------------
 // External / Third-party non-secret configuration
@@ -81,6 +92,9 @@ param brevoWebhookHeader string = 'X-Brevo-Webhook-Secret'
 param mailFromAddress string = 'noreply@capstone.local'
 param mailFromName string = 'Capstone Auth'
 param vendorManagementUrl string = ''
+param cmsPostgresUsername string = ''
+param cmsMeilisearchUrl string = ''
+param externalAuthUrl string = 'https://auth-proxy.ashyisland-db3cde0b.eastasia.azurecontainerapps.io'
 
 // ---------------------------------------------------------------------------
 // External subgroup URLs (used when subgroups are deployed on other subscriptions)
@@ -114,6 +128,7 @@ resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' exist
 
 // Compute image prefix
 var imgPrefix = registryMode == 'acr' && !empty(acrName) ? '${acrName}.azurecr.io/' : (!empty(registryServer) ? '${registryServer}/' : '')
+var cleanRegistryServer = !empty(registryServer) ? split(registryServer, '/')[0] : ''
 
 // ---------------------------------------------------------------------------
 // 1. Data Stores Module (Shared MySQL, Redis, Postgres, MongoDB)
@@ -124,12 +139,12 @@ module stores 'modules/stores.bicep' = if (deployStores) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: 1 // Data stores keep 1 replica while active to retain in-memory state
-    registryServer: registryServer
-    registryUser: registryUser
-    registryPassword: registryPassword
+    registryServer: registryMode == 'acr' ? cleanRegistryServer : ''
+    registryUser: registryMode == 'acr' ? registryUser : ''
+    registryPassword: registryMode == 'acr' ? registryPassword : ''
     mysqlRootPassword: mysqlRootPassword
     postgresPassword: postgresPassword
-    mysqlImage: '${imgPrefix}mysql-init:${imageTag}'
+    mysqlImage: registryMode == 'acr' ? '${imgPrefix}mysql-init:${imageTag}' : 'docker.io/library/mysql:8.0'
   }
 }
 
@@ -147,7 +162,7 @@ module serms 'modules/serms.bicep' = if (deploySerms) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: minReplicas
-    registryServer: registryServer
+    registryServer: cleanRegistryServer
     registryUser: registryUser
     registryPassword: registryPassword
     sermsWebImage: '${imgPrefix}serms-web:${imageTag}'
@@ -178,7 +193,7 @@ module ocr 'modules/ocr.bicep' = if (deployOcr) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: minReplicas
-    registryServer: registryServer
+    registryServer: cleanRegistryServer
     registryUser: registryUser
     registryPassword: registryPassword
     ocrApiImage: '${imgPrefix}ocr-api:${imageTag}'
@@ -202,7 +217,7 @@ module prs 'modules/prs.bicep' = if (deployPrs) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: minReplicas
-    registryServer: registryServer
+    registryServer: cleanRegistryServer
     registryUser: registryUser
     registryPassword: registryPassword
     prsWebImage: '${imgPrefix}prs-web:${imageTag}'
@@ -226,17 +241,27 @@ module cms 'modules/cms.bicep' = if (deployCms) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: minReplicas
-    registryServer: registryServer
+    registryServer: cleanRegistryServer
     registryUser: registryUser
     registryPassword: registryPassword
-    cmsWebImage: '${imgPrefix}cms-web:${imageTag}'
-    cmsBackendImage: '${imgPrefix}cms-backend:${imageTag}'
+    cmsWebImage: '${imgPrefix}cms-web:${cmsImageTag}'
+    cmsBackendImagePrefix: imgPrefix
+    cmsBackendImageTag: cmsImageTag
     mysqlPassword: mysqlRootPassword
     jwtSecret: jwtSecret
-    internalEncryptionKey: internalEncryptionKey
+    internalServiceSecret: internalEncryptionKey
+    appKey: !empty(cmsAppKey) ? cmsAppKey : 'base64:c1NtUjM1UGxhY2Vob2xkZXJLZXkxMjM0NTY3ODkwMTI='
+    fieldEncryptionKey: !empty(cmsFieldEncryptionKey) ? cmsFieldEncryptionKey : internalEncryptionKey
+    postgresPassword: !empty(cmsPostgresPassword) ? cmsPostgresPassword : postgresPassword
+    meilisearchKey: !empty(cmsMeilisearchKey) ? cmsMeilisearchKey : internalEncryptionKey
     mysqlHost: activeMysqlHost
     redisHost: activeRedisHost
-    authServiceUrl: 'http://auth-api'
+    postgresHost: activePostgresHost
+    postgresUsername: !empty(cmsPostgresUsername) ? cmsPostgresUsername : 'ocr_user'
+    mongoHost: activeMongoHost
+    meilisearchUrl: cmsMeilisearchUrl
+    authServiceUrl: deployAuth ? 'http://auth-api/api' : '${externalAuthUrl}/api'
+    defaultDomain: managedEnvironment.properties.defaultDomain
   }
 }
 
@@ -249,7 +274,7 @@ module ticketing 'modules/ticketing.bicep' = if (deployTicketing) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: minReplicas
-    registryServer: registryServer
+    registryServer: cleanRegistryServer
     registryUser: registryUser
     registryPassword: registryPassword
     ticketingWebImage: '${imgPrefix}ticketing-web:${imageTag}'
@@ -285,7 +310,7 @@ module auth 'modules/auth.bicep' = if (deployAuth) {
     location: location
     managedEnvironmentId: managedEnvironment.id
     minReplicas: minReplicas
-    registryServer: registryServer
+    registryServer: cleanRegistryServer
     registryUser: registryUser
     registryPassword: registryPassword
     authProxyImage: '${imgPrefix}auth-proxy:${imageTag}'
@@ -328,4 +353,10 @@ output sermsApiFqdn string = deploySerms ? serms!.outputs.sermsApiFqdn : externa
 output prsWebFqdn string = deployPrs ? prs!.outputs.prsWebFqdn : externalPrsWebUrl
 output prsApiFqdn string = deployPrs ? prs!.outputs.prsApiFqdn : externalPrsApiUrl
 output cmsWebFqdn string = deployCms ? cms!.outputs.cmsWebFqdn : externalCmsWebUrl
+output vendorManagementFqdn string = deployCms ? cms!.outputs.vendorManagementFqdn : externalCmsVendorUrl
+output contractManagementFqdn string = deployCms ? cms!.outputs.contractManagementFqdn : externalCmsContractUrl
+output searchFqdn string = deployCms ? cms!.outputs.searchFqdn : externalCmsSearchUrl
+output notificationFqdn string = deployCms ? cms!.outputs.notificationFqdn : externalCmsNotificationUrl
+output aiServiceFqdn string = deployCms ? cms!.outputs.aiServiceFqdn : externalCmsAiUrl
+output analyticsServiceFqdn string = deployCms ? cms!.outputs.analyticsServiceFqdn : externalCmsAnalyticsUrl
 output ticketingWebFqdn string = deployTicketing ? ticketing!.outputs.ticketingWebFqdn : externalTicketingWebUrl
