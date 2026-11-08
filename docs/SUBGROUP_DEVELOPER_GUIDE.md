@@ -5,6 +5,29 @@
 
 ---
 
+## 0. Autonomous Subagent Execution Model (Minimal Human Intervention)
+
+> **Maintainer:** **@Zanti00** owns this repo, the central Azure subscription (`rg-capstone`), and the GitHub organization secrets. Anywhere this guide says "maintainer", it means **@Zanti00**.
+
+Your AI agent can do almost all of the onboarding. Paste the prompt from **[`docs/SUBAGENT_ONBOARDING_PROMPT.md`](SUBAGENT_ONBOARDING_PROMPT.md)** into your agent session, inside your subgroup's repository.
+
+### Human vs. Subagent Division of Labor (central production)
+
+| Step / Task | Owner | Notes |
+|:---|:---:|:---|
+| Transfer repo to `Scientific-Biotech-Specialties-Inc` | 👤 Subgroup | Assumed done before running the prompt. |
+| Install Azure CLI (if missing) | 🤖 Agent, asks first | Only needed for local checks. CI deploys without it. |
+| Port alignment, Vite base path, nginx SPA fallback ([§1](#1-subgroup-port--routing-contract), [§5](#5-dockerfile--frontend-packaging-guardrails)) | 🤖 Agent | |
+| SSO token handling, health endpoint, migrations on boot ([§2](#2-shared-secrets--single-sign-on-sso-contract), [§5](#5-dockerfile--frontend-packaging-guardrails)) | 🤖 Agent | |
+| Create `.github/workflows/deploy.yml` ([§8](#8-automated-push-to-prod-cicd-github-actions)) | 🤖 Agent | Uses the org secrets; no secret values involved. |
+| Review the diff, commit, and push to `main` | 👤 Subgroup | The push triggers the production deploy. |
+| Provision the subgroup's Container Apps in `rg-capstone`, wire auth-proxy routes, register OIDC for unlisted repo names, GHCR pull access | 👤 **@Zanti00** | Subgroup members have no access to the central subscription. |
+
+> [!NOTE]
+> Sections 3–4 (running `deploy.ps1` on **your own** student subscription) are only for Mode 1 self-hosting. When you deploy to central production through CI/CD, you don't need to run `deploy.ps1`, `-SyncProxy`, or `az login`.
+
+---
+
 ## 1. Subgroup Port & Routing Contract
 
 All external client traffic passes through the central reverse proxy (`auth-proxy`). Your microservices must expose standard internal container ports matching the gateway configuration:
@@ -38,7 +61,7 @@ Because all subsystems rely on the central `auth-service` for OAuth2 authenticat
 3. **`INTERNAL_SERVICE_SECRET`**: Shared header secret (`X-Internal-Secret`) for trusted service-to-service calls.
 
 > [!IMPORTANT]
-> Obtain these shared secrets from the lead maintainer via `secrets.prod.json`. Never change or commit them to Git.
+> Obtain these shared secrets from the maintainer, **@Zanti00**, via `secrets.prod.json`. Never change or commit them to Git.
 
 ---
 
@@ -101,10 +124,10 @@ Once your deployment completes, the script prints your live URLs and updates `co
 ```
 
 ### Step 1: Share Your Endpoints
-Commit and push your updated `config/deploy.config.json` to the repo (or send your URLs to the central DevOps maintainer).
+Commit and push your updated `config/deploy.config.json` to the repo (or send your URLs to the maintainer, **@Zanti00**).
 
 ### Step 2: Sync the Front Door
-The central maintainer (or anyone with access to the core account) runs:
+The maintainer, **@Zanti00** (or anyone with access to the core account), runs:
 ```powershell
 .\scripts\deploy.ps1 -SyncProxy
 ```
@@ -124,8 +147,8 @@ When your active student subscription runs out of credit:
    ```powershell
    .\scripts\deploy.ps1 -Module <your-module> -ScaleMode Serverless
    ```
-3. **Resync with the Lead Maintainer:**
-   Send your newly generated URLs to the Lead Maintainer, who executes `.\scripts\deploy.ps1 -SyncProxy`. The front door updates in 5 seconds.
+3. **Resync with the maintainer (@Zanti00):**
+   Send your newly generated URLs to **@Zanti00**, who runs `.\scripts\deploy.ps1 -SyncProxy`. The front door updates in 5 seconds.
 4. **Full Guide:** For comprehensive instructions and database migration/backup steps, see [`docs/ACCOUNT_ROTATION_RUNBOOK.md`](ACCOUNT_ROTATION_RUNBOOK.md).
 
 ---
@@ -192,7 +215,12 @@ To ensure you don't burn through your $100 student allowance:
 
 ## 8. Automated Push-to-Prod CI/CD (GitHub Actions)
 
-Every repository in the `Scientific-Biotech-Specialties-Inc` organization can now use automated continuous deployment. Every time code is merged or pushed to `main`, GitHub Actions automatically builds the updated container image, pushes it to GitHub Container Registry (GHCR), and triggers a rolling update of the Azure Container App in **rg-capstone** with zero downtime!
+Every repository in the `Scientific-Biotech-Specialties-Inc` organization has access to automated continuous deployment. Every time code is merged or pushed to `main`, GitHub Actions automatically builds the updated container image, pushes it to GitHub Container Registry (GHCR), and triggers a rolling update of the Azure Container App in **rg-capstone** with zero downtime!
+
+> [!NOTE]
+> **Zero Secret Setup Required for Subgroups!**  
+> The maintainer, **@Zanti00**, has **already configured** all Azure secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) at the GitHub Organization level. Federated OIDC credentials are pre-registered for the repo names `prs`, `cms`, `ticketing`, `capstone-auth-module`, `smart-expense-management-system`, `ocr-pipeline`, and `capstone-azure-infra`. If your repo has a different name, ask **@Zanti00** to register it.  
+> **Subgroup developers DO NOT need to add any secrets to their repositories.** All secrets are inherited automatically once the repository is in the organization.
 
 ### How the Pipeline Works:
 ```
@@ -207,30 +235,27 @@ GitHub Container Registry (ghcr.io)
        │  • Pushes to ghcr.io/scientific-biotech-specialties-inc/<app-name>
        ▼
 Azure Login (OIDC / Federated Credentials)
-       │  • Authenticates with zero secret expiration
+       │  • Authenticates with zero secret expiration using Org credentials
        ▼
 Azure Container Apps Rollout
           • Runs: az containerapp update -n <app-name> -g rg-capstone --image <sha-tag>
           • Automatically deploys a new revision and verifies healthy status
 ```
 
-### 8.1 Required GitHub Repository Secrets
-In your subgroup's repository, go to **Settings > Secrets and variables > Actions** and add:
+---
 
-| Secret Name | Value Description |
-|:---|:---|
-| `AZURE_CLIENT_ID` | Application (Client) ID of your Azure App Registration with Federated Credentials |
-| `AZURE_TENANT_ID` | Directory (Tenant) ID of your Azure subscription |
-| `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID hosting your Resource Group (`rg-capstone`) |
+### 8.1 How Subgroups Onboard to Automated Push-to-Prod (2 Steps)
 
-*(Note: If using traditional Service Principal instead of OIDC, you can alternately provide `AZURE_CREDENTIALS` JSON).*
+Subgroup teams only need to do two things:
 
-### 8.2 Enabling the Pipeline for Your Subgroup
+#### Step 1: Transfer Repository to the Organization
+Ensure your repository is hosted under (or transferred to) the **`Scientific-Biotech-Specialties-Inc`** GitHub Organization. This automatically inherits the organization secrets and package publishing permissions.
 
-You have two choices to enable automated deployments:
+#### Step 2: Add the Deployment Workflow YAML
+Add `.github/workflows/deploy.yml` into your repository. You can choose **Choice A**, **Choice B**, or **Choice C (AI Subagent Delegation)**:
 
-#### Choice A: Reusable Workflow (Recommended — ~15 Lines)
-Add `.github/workflows/deploy.yml` in your repository:
+##### Choice A: Central Reusable Workflow (Recommended — Only ~15 Lines!)
+Create `.github/workflows/deploy.yml` in your repo:
 ```yaml
 name: deploy-prod
 
@@ -241,6 +266,10 @@ on:
 
 jobs:
   deploy:
+    permissions:            # a called workflow can't exceed these
+      contents: read
+      packages: write
+      id-token: write
     uses: Scientific-Biotech-Specialties-Inc/capstone-azure-infra/.github/workflows/reusable-subgroup-deploy.yml@main
     with:
       app_name: 'prs-api'                 # Your container app name in Azure
@@ -254,12 +283,26 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 ```
 
-#### Choice B: Turnkey Pre-Built Templates
-Ready-to-use full-stack workflow templates are maintained in `capstone-azure-infra`:
+##### Choice B: Turnkey Standalone Templates
+If your repository contains multiple components (e.g. Web frontend + API backend in one repo), copy the pre-built template from `capstone-azure-infra`:
 - **PRS (Web + API):** [`.github/workflows/templates/prs-deploy.yml`](../.github/workflows/templates/prs-deploy.yml)
 - **CMS (Web + Backend):** [`.github/workflows/templates/cms-deploy.yml`](../.github/workflows/templates/cms-deploy.yml)
 - **Ticketing (Web + Gateway):** [`.github/workflows/templates/ticketing-deploy.yml`](../.github/workflows/templates/ticketing-deploy.yml)
 - **Single Service:** [`.github/workflows/templates/subgroup-single-app-deploy.yml`](../.github/workflows/templates/subgroup-single-app-deploy.yml)
 
-Simply copy the template corresponding to your subsystem into your repository's `.github/workflows/deploy.yml`, verify the paths to your Dockerfiles, and every push to `main` will automatically deploy to Azure production!
+##### Choice C: Delegate to Your AI Subagent (Recommended if you use an AI agent)
+Paste the full prompt from **[`docs/SUBAGENT_ONBOARDING_PROMPT.md`](SUBAGENT_ONBOARDING_PROMPT.md)** into your agent. It finds your Dockerfiles, aligns ports and paths with the contract, writes `deploy.yml`, verifies the result, and lists anything that needs **@Zanti00**.
+
+---
+
+### 8.2 Subagent Delegation Prompt
+The single maintained prompt lives in [`docs/SUBAGENT_ONBOARDING_PROMPT.md`](SUBAGENT_ONBOARDING_PROMPT.md). It covers PRS, CMS, and Ticketing, so there's no separate per-team prompt to keep in sync.
+
+---
+
+### 8.3 (Optional / Advanced) Manual Secrets Override
+Setting manual repository secrets is **strictly optional**. You only need to set repository-level secrets if:
+- Your team decides to deploy to your **own separate $100 student subscription** instead of the central production resource group (`rg-capstone`).
+- In that case, add your own subscription's `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` under your repository's **Settings > Secrets and variables > Actions**. Repository secrets will override organization defaults.
+
 

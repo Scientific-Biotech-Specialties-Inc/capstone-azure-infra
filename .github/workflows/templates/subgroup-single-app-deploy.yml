@@ -14,6 +14,11 @@ on:
 # -----------------------------------------------------------------------------
 jobs:
   deploy:
+    # A called workflow can never exceed the caller's token permissions.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     uses: Scientific-Biotech-Specialties-Inc/capstone-azure-infra/.github/workflows/reusable-subgroup-deploy.yml@main
     with:
       app_name: 'your-app-name'        # e.g., prs-api, cms-web, ticketing-gateway
