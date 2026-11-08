@@ -1,0 +1,137 @@
+name: reusable-subgroup-deploy
+
+# Reusable GitHub Actions workflow for subgroup microservices.
+# Builds Docker images, pushes to GitHub Container Registry (GHCR),
+# and updates Azure Container Apps to roll out new code changes.
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: 'Primary Azure Container App name to update (e.g., prs-api, cms-web)'
+        required: true
+        type: string
+      secondary_app_name:
+        description: 'Optional secondary Container App using the same image (e.g., prs-worker)'
+        required: false
+        default: ''
+        type: string
+      image_name:
+        description: 'Container image name in GHCR (e.g., prs-api, cms-web)'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile relative to repository root'
+        required: false
+        default: 'Dockerfile'
+        type: string
+      context:
+        description: 'Build context path relative to repository root'
+        required: false
+        default: '.'
+        type: string
+      build_args:
+        description: 'Optional build arguments (e.g. VITE_AUTH_MODULE_URL=...)'
+        required: false
+        default: ''
+        type: string
+      resource_group:
+        description: 'Target Azure Resource Group'
+        required: false
+        default: 'rg-capstone'
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        required: false
+      AZURE_CREDENTIALS:
+        required: false
+      GHCR_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Determine Registry & Image Tags
+        id: meta
+        run: |
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REGISTRY="ghcr.io/${OWNER_LOWER}"
+          IMAGE_PATH="${REGISTRY}/${{ inputs.image_name }}"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "image_path=${IMAGE_PATH}" >> "$GITHUB_OUTPUT"
+          echo "tag_sha=${IMAGE_PATH}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "tag_latest=${IMAGE_PATH}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tag_sha }}
+            ${{ steps.meta.outputs.tag_latest }}
+          build-args: ${{ inputs.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        if: ${{ secrets.AZURE_CLIENT_ID != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Azure login (Service Principal fallback)
+        if: ${{ secrets.AZURE_CLIENT_ID == '' && secrets.AZURE_CREDENTIALS != '' }}
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Roll primary Container App (${{ inputs.app_name }})
+        run: |
+          az containerapp update \
+            --name "${{ inputs.app_name }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --image "${{ steps.meta.outputs.tag_sha }}"
+
+      - name: Roll secondary Container App (${{ inputs.secondary_app_name }})
+        if: ${{ inputs.secondary_app_name != '' }}
+        run: |
+          az containerapp update \
+            --name "${{ inputs.secondary_app_name }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --image "${{ steps.meta.outputs.tag_sha }}"
+
+      - name: Deployment Verification
+        run: |
+          echo "Verifying deployment for ${{ inputs.app_name }}..."
+          az containerapp show \
+            --name "${{ inputs.app_name }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "{name:name, provisioningState:properties.provisioningState, latestRevision:properties.latestRevisionName, fqdn:properties.configuration.ingress.fqdn}" \
+            -o table

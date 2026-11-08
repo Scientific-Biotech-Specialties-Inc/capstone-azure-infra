@@ -1,0 +1,103 @@
+name: deploy-ticketing-prod
+
+# Workflow for the Ticketing System (TS) team.
+# Automatically builds container images on push to main and rolls Azure Container Apps.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  RG: rg-capstone
+  REGISTRY_ORG: ghcr.io/scientific-biotech-specialties-inc
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  deploy-gateway:
+    name: Build & Deploy Ticketing Gateway / API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ticketing-gateway
+        uses: docker/build-push-action@v5
+        with:
+          context: ./gateway # Adjust path to gateway or backend API
+          file: ./gateway/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY_ORG }}/ticketing-gateway:${{ github.sha }}
+            ${{ env.REGISTRY_ORG }}/ticketing-gateway:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll ticketing-gateway in Azure
+        run: |
+          az containerapp update \
+            --name ticketing-gateway \
+            --resource-group "${{ env.RG }}" \
+            --image "${{ env.REGISTRY_ORG }}/ticketing-gateway:${{ github.sha }}"
+
+  deploy-web:
+    name: Build & Deploy Ticketing Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ticketing-web
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend # Adjust path to frontend SPA
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY_ORG }}/ticketing-web:${{ github.sha }}
+            ${{ env.REGISTRY_ORG }}/ticketing-web:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll ticketing-web in Azure
+        run: |
+          az containerapp update \
+            --name ticketing-web \
+            --resource-group "${{ env.RG }}" \
+            --image "${{ env.REGISTRY_ORG }}/ticketing-web:${{ github.sha }}"

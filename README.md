@@ -27,8 +27,10 @@ README.md                             root
 │   └── teardown.ps1                  delete resource group
 ├── secrets.example.json              → copy to secrets.prod.json (git-ignored)
 └── .github/workflows/
-    ├── deploy-infra.yml              modular GitHub Actions deployment workflow
-    └── publish-ghcr.yml              reusable GHCR container build workflow
+    ├── deploy-infra.yml              automated Bicep verification & modular Azure deployment
+    ├── publish-ghcr.yml              reusable GHCR container build workflow
+    ├── reusable-subgroup-deploy.yml  central reusable workflow for automated subgroup deployment
+    └── templates/                    turnkey push-to-prod CI/CD templates (PRS, CMS, TS, Single App)
 ```
 
 ---
@@ -36,7 +38,7 @@ README.md                             root
 ## 📖 Documentation Hub
 
 - **For AI Subagents & Orchestrators**: Consult [`AGENTS.md`](./AGENTS.md) for non-negotiable axioms, deterministic naming protocols, Bicep validation gates, and subagent role delegation.
-- **For Subgroup Developers (PRS, CMS, Ticketing, SERMS)**: Consult [`docs/SUBGROUP_DEVELOPER_GUIDE.md`](./docs/SUBGROUP_DEVELOPER_GUIDE.md) for container port contracts, shared SSO keys, Mode 1 deployment walkthrough, and front-door synchronization (`-SyncProxy`).
+- **For Subgroup Developers (PRS, CMS, Ticketing, SERMS)**: Consult [`docs/SUBGROUP_DEVELOPER_GUIDE.md`](./docs/SUBGROUP_DEVELOPER_GUIDE.md) for container port contracts, shared SSO keys, Mode 1 deployment walkthrough, front-door synchronization (`-SyncProxy`), and **automated push-to-prod GitHub Actions CI/CD**.
 - **For Account Rotation ($100 Credit Exhaustion)**: Consult [`docs/ACCOUNT_ROTATION_RUNBOOK.md`](./docs/ACCOUNT_ROTATION_RUNBOOK.md) for zero-edit account rotation steps and device-code remote logins.
 
 ---

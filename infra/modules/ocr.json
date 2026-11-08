@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "4299882730512713282"
+      "templateHash": "9753834824616969717"
     }
   },
   "parameters": {
@@ -218,7 +218,7 @@
             }
           ],
           "scale": {
-            "minReplicas": "[parameters('minReplicas')]",
+            "minReplicas": 1,
             "maxReplicas": 2,
             "rules": [
               {
@@ -258,7 +258,8 @@
                 "-A",
                 "app.tasks.celery_app",
                 "worker",
-                "--loglevel=info"
+                "--loglevel=info",
+                "--concurrency=1"
               ],
               "resources": {
                 "cpu": "[json('1.0')]",

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "487640688731024613"
+      "templateHash": "9530250640934596767"
     }
   },
   "parameters": {
@@ -249,19 +249,19 @@
   "outputs": {
     "mysqlFqdn": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-mysql'), '2024-03-01').configuration.ingress.fqdn]"
+      "value": "shared-mysql"
     },
     "redisFqdn": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-redis'), '2024-03-01').configuration.ingress.fqdn]"
+      "value": "shared-redis"
     },
     "postgresFqdn": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-postgres'), '2024-03-01').configuration.ingress.fqdn]"
+      "value": "shared-postgres"
     },
     "mongoFqdn": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.App/containerApps', 'shared-mongo'), '2024-03-01').configuration.ingress.fqdn]"
+      "value": "shared-mongo"
     }
   }
 }

@@ -1,0 +1,103 @@
+name: deploy-prs-prod
+
+# Workflow for the PRS (Productivity Report System) team.
+# Automatically builds container images on push to main and rolls Azure Container Apps.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  RG: rg-capstone
+  REGISTRY_ORG: ghcr.io/scientific-biotech-specialties-inc
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  deploy-api:
+    name: Build & Deploy PRS API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push prs-api
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/api # Adjust if your API Dockerfile is at the repository root
+          file: ./apps/api/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY_ORG }}/prs-api:${{ github.sha }}
+            ${{ env.REGISTRY_ORG }}/prs-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll prs-api in Azure
+        run: |
+          az containerapp update \
+            --name prs-api \
+            --resource-group "${{ env.RG }}" \
+            --image "${{ env.REGISTRY_ORG }}/prs-api:${{ github.sha }}"
+
+  deploy-web:
+    name: Build & Deploy PRS Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push prs-web
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/web # Adjust if your Web Dockerfile is at the repository root
+          file: ./apps/web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY_ORG }}/prs-web:${{ github.sha }}
+            ${{ env.REGISTRY_ORG }}/prs-web:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll prs-web in Azure
+        run: |
+          az containerapp update \
+            --name prs-web \
+            --resource-group "${{ env.RG }}" \
+            --image "${{ env.REGISTRY_ORG }}/prs-web:${{ github.sha }}"

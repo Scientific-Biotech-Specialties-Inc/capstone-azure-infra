@@ -112,6 +112,24 @@ Within **~15 seconds**, the central `auth-proxy` begins routing `/prs/`, `/cms/`
 
 ---
 
+## 4.5 What to Do When Your $100 Student Credits Run Out (Account Switching)
+
+When your active student subscription runs out of credit:
+1. **Switch Account in CLI:**
+   ```powershell
+   .\scripts\deploy.ps1 -Module <your-module> -SwitchAccount
+   ```
+   *(If the teammate who owns the new account is remote, append `-UseDeviceCode` so they can approve it on their own browser without sharing credentials).*
+2. **Redeploy to the New Subscription:**
+   ```powershell
+   .\scripts\deploy.ps1 -Module <your-module> -ScaleMode Serverless
+   ```
+3. **Resync with the Lead Maintainer:**
+   Send your newly generated URLs to the Lead Maintainer, who executes `.\scripts\deploy.ps1 -SyncProxy`. The front door updates in 5 seconds.
+4. **Full Guide:** For comprehensive instructions and database migration/backup steps, see [`docs/ACCOUNT_ROTATION_RUNBOOK.md`](ACCOUNT_ROTATION_RUNBOOK.md).
+
+---
+
 ## 5. Dockerfile & Frontend Packaging Guardrails
 
 When building Docker images for your subgroup, follow these guidelines to prevent deployment failures:
@@ -169,3 +187,79 @@ To ensure you don't burn through your $100 student allowance:
 ### Issue 3: Missing Database Tables after Restart
 - **Cause:** Database containers run with ephemeral storage unless backed up.
 - **Resolution:** Ensure migrations run in your API entrypoint, or use the Azure Files storage share mounted at `/backups` to persist data.
+
+---
+
+## 8. Automated Push-to-Prod CI/CD (GitHub Actions)
+
+Every repository in the `Scientific-Biotech-Specialties-Inc` organization can now use automated continuous deployment. Every time code is merged or pushed to `main`, GitHub Actions automatically builds the updated container image, pushes it to GitHub Container Registry (GHCR), and triggers a rolling update of the Azure Container App in **rg-capstone** with zero downtime!
+
+### How the Pipeline Works:
+```
+Git push to 'main'
+       │
+       ▼
+GitHub Actions Runner (Buildx)
+       │  • Builds Docker image with GHA layer caching
+       │  • Tags with both ${{ github.sha }} and 'latest'
+       ▼
+GitHub Container Registry (ghcr.io)
+       │  • Pushes to ghcr.io/scientific-biotech-specialties-inc/<app-name>
+       ▼
+Azure Login (OIDC / Federated Credentials)
+       │  • Authenticates with zero secret expiration
+       ▼
+Azure Container Apps Rollout
+          • Runs: az containerapp update -n <app-name> -g rg-capstone --image <sha-tag>
+          • Automatically deploys a new revision and verifies healthy status
+```
+
+### 8.1 Required GitHub Repository Secrets
+In your subgroup's repository, go to **Settings > Secrets and variables > Actions** and add:
+
+| Secret Name | Value Description |
+|:---|:---|
+| `AZURE_CLIENT_ID` | Application (Client) ID of your Azure App Registration with Federated Credentials |
+| `AZURE_TENANT_ID` | Directory (Tenant) ID of your Azure subscription |
+| `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID hosting your Resource Group (`rg-capstone`) |
+
+*(Note: If using traditional Service Principal instead of OIDC, you can alternately provide `AZURE_CREDENTIALS` JSON).*
+
+### 8.2 Enabling the Pipeline for Your Subgroup
+
+You have two choices to enable automated deployments:
+
+#### Choice A: Reusable Workflow (Recommended — ~15 Lines)
+Add `.github/workflows/deploy.yml` in your repository:
+```yaml
+name: deploy-prod
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    uses: Scientific-Biotech-Specialties-Inc/capstone-azure-infra/.github/workflows/reusable-subgroup-deploy.yml@main
+    with:
+      app_name: 'prs-api'                 # Your container app name in Azure
+      image_name: 'prs-api'               # Image name in GHCR
+      dockerfile: 'Dockerfile'
+      context: '.'
+      resource_group: 'rg-capstone'
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+```
+
+#### Choice B: Turnkey Pre-Built Templates
+Ready-to-use full-stack workflow templates are maintained in `capstone-azure-infra`:
+- **PRS (Web + API):** [`.github/workflows/templates/prs-deploy.yml`](../.github/workflows/templates/prs-deploy.yml)
+- **CMS (Web + Backend):** [`.github/workflows/templates/cms-deploy.yml`](../.github/workflows/templates/cms-deploy.yml)
+- **Ticketing (Web + Gateway):** [`.github/workflows/templates/ticketing-deploy.yml`](../.github/workflows/templates/ticketing-deploy.yml)
+- **Single Service:** [`.github/workflows/templates/subgroup-single-app-deploy.yml`](../.github/workflows/templates/subgroup-single-app-deploy.yml)
+
+Simply copy the template corresponding to your subsystem into your repository's `.github/workflows/deploy.yml`, verify the paths to your Dockerfiles, and every push to `main` will automatically deploy to Azure production!
+

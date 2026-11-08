@@ -4,6 +4,12 @@ name: deploy-infra
 # Supports modular subgroup deployments and serverless scaling.
 
 on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/**'
+      - 'config/**'
+      - '.github/workflows/deploy-infra.yml'
   workflow_dispatch:
     inputs:
       module:
@@ -45,6 +51,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate Bicep Templates
+        run: |
+          az bicep build -f infra/main.bicep
+          az bicep build -f infra/apps.bicep
+
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
@@ -61,8 +72,9 @@ jobs:
 
       - name: Container Apps Deployment
         run: |
+          SCALE="${{ github.event.inputs.scale_mode || 'Serverless' }}"
           MIN_REPLICAS=0
-          if [ "${{ github.event.inputs.scale_mode }}" = "WarmDemo" ]; then
+          if [ "$SCALE" = "WarmDemo" ]; then
             MIN_REPLICAS=1
           fi
 
@@ -74,7 +86,7 @@ jobs:
           DEPLOY_CMS=false
           DEPLOY_TICKETING=false
 
-          MOD="${{ github.event.inputs.module }}"
+          MOD="${{ github.event.inputs.module || 'core' }}"
           if [ "$MOD" = "all" ]; then
             DEPLOY_STORES=true; DEPLOY_AUTH=true; DEPLOY_SERMS=true; DEPLOY_OCR=true; DEPLOY_PRS=true; DEPLOY_CMS=true; DEPLOY_TICKETING=true
           elif [ "$MOD" = "core" ]; then

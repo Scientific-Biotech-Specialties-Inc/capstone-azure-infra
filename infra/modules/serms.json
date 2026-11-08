@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "12948731227989037013"
+      "templateHash": "185570450006620865"
     }
   },
   "parameters": {
@@ -269,7 +269,11 @@
                 },
                 {
                   "name": "AI_SERVICE_TIMEOUT",
-                  "value": "10"
+                  "value": "60"
+                },
+                {
+                  "name": "AI_SERVICE_CALLBACK_BASE_URL",
+                  "value": "http://serms-api"
                 },
                 {
                   "name": "SUPABASE_STORAGE_DRIVER",
