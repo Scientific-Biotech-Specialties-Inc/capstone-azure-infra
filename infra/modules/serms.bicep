@@ -143,7 +143,8 @@ resource sermsApi 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'JWT_PUBLIC_KEY_PATH', value: 'storage/oauth-public.key' }
             { name: 'AI_SERVICE_URL', value: aiServiceUrl }
             { name: 'AI_SERVICE_API_KEY', secretRef: 'ai-api-key' }
-            { name: 'AI_SERVICE_TIMEOUT', value: '10' }
+            { name: 'AI_SERVICE_TIMEOUT', value: '60' }
+            { name: 'AI_SERVICE_CALLBACK_BASE_URL', value: 'http://serms-api' }
             { name: 'SUPABASE_STORAGE_DRIVER', value: 's3' }
             { name: 'SUPABASE_URL', value: supabaseUrl }
             { name: 'SUPABASE_REGION', value: supabaseRegion }

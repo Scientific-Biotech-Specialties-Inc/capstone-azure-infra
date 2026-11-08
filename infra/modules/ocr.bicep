@@ -133,7 +133,7 @@ resource ocrApi 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: minReplicas
+        minReplicas: 1 // Keep 1 replica warm to eliminate 25s ML cold starts that exceed upstream timeouts
         maxReplicas: 2
         rules: [
           {
@@ -170,7 +170,7 @@ resource ocrWorker 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'ocr-worker'
           image: ocrWorkerImage
           command: [ 'celery' ]
-          args: [ '-A', 'app.tasks.celery_app', 'worker', '--loglevel=info' ]
+          args: [ '-A', 'app.tasks.celery_app', 'worker', '--loglevel=info', '--concurrency=1' ]
           resources: { cpu: json('1.0'), memory: '2.0Gi' }
           env: [
             { name: 'APP_ENV', value: 'production' }

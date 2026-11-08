@@ -1,0 +1,27 @@
+name: deploy-subgroup-single-app
+
+# Generic starter workflow for any single-app subgroup repository.
+# Option A: Call the centralized reusable workflow (recommended, only 15 lines!).
+# Option B: Run standalone Docker build and az containerapp update steps.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# -----------------------------------------------------------------------------
+# OPTION A: Using Central Reusable Workflow (Recommended)
+# -----------------------------------------------------------------------------
+jobs:
+  deploy:
+    uses: Scientific-Biotech-Specialties-Inc/capstone-azure-infra/.github/workflows/reusable-subgroup-deploy.yml@main
+    with:
+      app_name: 'your-app-name'        # e.g., prs-api, cms-web, ticketing-gateway
+      image_name: 'your-image-name'    # e.g., prs-api, cms-web
+      dockerfile: 'Dockerfile'
+      context: '.'
+      resource_group: 'rg-capstone'
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

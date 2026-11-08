@@ -1,0 +1,103 @@
+name: deploy-cms-prod
+
+# Workflow for the CMS (Contract Management System) team.
+# Automatically builds container images on push to main and rolls Azure Container Apps.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  RG: rg-capstone
+  REGISTRY_ORG: ghcr.io/scientific-biotech-specialties-inc
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  deploy-cms-backend:
+    name: Build & Deploy CMS Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push cms-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend # Adjust path to backend service
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY_ORG }}/cms-backend:${{ github.sha }}
+            ${{ env.REGISTRY_ORG }}/cms-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll cms-backend in Azure
+        run: |
+          az containerapp update \
+            --name cms-backend \
+            --resource-group "${{ env.RG }}" \
+            --image "${{ env.REGISTRY_ORG }}/cms-backend:${{ github.sha }}"
+
+  deploy-cms-web:
+    name: Build & Deploy CMS Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push cms-web
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend # Adjust path to frontend SPA
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY_ORG }}/cms-web:${{ github.sha }}
+            ${{ env.REGISTRY_ORG }}/cms-web:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll cms-web in Azure
+        run: |
+          az containerapp update \
+            --name cms-web \
+            --resource-group "${{ env.RG }}" \
+            --image "${{ env.REGISTRY_ORG }}/cms-web:${{ github.sha }}"
