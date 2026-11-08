@@ -7,6 +7,7 @@ README.md                             root
 ├── AGENTS.md                         AI agent rulebook, axioms, and subagent directives
 ├── docs/
 │   ├── SUBGROUP_DEVELOPER_GUIDE.md   step-by-step developer guide for PRS, CMS, TS, SERMS
+│   ├── SUBAGENT_ONBOARDING_PROMPT.md paste-ready AI agent prompt for subgroup push-to-prod onboarding
 │   └── ACCOUNT_ROTATION_RUNBOOK.md   runbook for rotating $100 student accounts
 ├── config/
 │   └── deploy.config.json            central non-secret deployment config & subgroup URLs
@@ -39,6 +40,7 @@ README.md                             root
 
 - **For AI Subagents & Orchestrators**: Consult [`AGENTS.md`](./AGENTS.md) for non-negotiable axioms, deterministic naming protocols, Bicep validation gates, and subagent role delegation.
 - **For Subgroup Developers (PRS, CMS, Ticketing, SERMS)**: Consult [`docs/SUBGROUP_DEVELOPER_GUIDE.md`](./docs/SUBGROUP_DEVELOPER_GUIDE.md) for container port contracts, shared SSO keys, Mode 1 deployment walkthrough, front-door synchronization (`-SyncProxy`), and **automated push-to-prod GitHub Actions CI/CD**.
+- **For Subgroup AI Agents**: Paste [`docs/SUBAGENT_ONBOARDING_PROMPT.md`](./docs/SUBAGENT_ONBOARDING_PROMPT.md) into your agent session to automate push-to-prod onboarding. Maintainer: **@Zanti00**.
 - **For Account Rotation ($100 Credit Exhaustion)**: Consult [`docs/ACCOUNT_ROTATION_RUNBOOK.md`](./docs/ACCOUNT_ROTATION_RUNBOOK.md) for zero-edit account rotation steps and device-code remote logins.
 
 ---
@@ -89,7 +91,7 @@ When another subgroup (PRS, CMS, or Ticketing) wants to deploy on **their own $1
    .\scripts\deploy.ps1 -Module ticketing -ScaleMode Serverless
    ```
 3. The script automatically updates their generated `.azurecontainerapps.io` URLs in `config/deploy.config.json`.
-4. Commit/share the updated `config/deploy.config.json` with the core maintainer, who runs:
+4. Commit/share the updated `config/deploy.config.json` with the maintainer, **@Zanti00**, who runs:
    ```powershell
    .\scripts\deploy.ps1 -SyncProxy
    ```

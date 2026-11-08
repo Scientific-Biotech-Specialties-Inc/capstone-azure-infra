@@ -60,6 +60,10 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      # `secrets` is not allowed in step `if:`; expose presence flags instead.
+      HAS_OIDC: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      HAS_SP_CREDS: ${{ secrets.AZURE_CREDENTIALS != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -99,7 +103,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Azure login (OIDC)
-        if: ${{ secrets.AZURE_CLIENT_ID != '' }}
+        if: env.HAS_OIDC == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -107,7 +111,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Azure login (Service Principal fallback)
-        if: ${{ secrets.AZURE_CLIENT_ID == '' && secrets.AZURE_CREDENTIALS != '' }}
+        if: env.HAS_OIDC != 'true' && env.HAS_SP_CREDS == 'true'
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
