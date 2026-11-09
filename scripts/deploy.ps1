@@ -39,6 +39,8 @@ param(
     [string]$Location = "",
     [string]$EnvironmentName = "",
     [string]$ImageTag = "",
+    [ValidatePattern('^[0-9a-f]{40}$')]
+    [string]$CmsImageTag = "",
     [int]$MinReplicas = -1
 )
 
@@ -52,7 +54,13 @@ $InfraRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 # 0. Pre-flight & Account Resolution
 # --------------------------------------------------------------------------
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-    throw "Azure CLI not found. Install from https://aka.ms/install-azure-cli"
+    if (Test-Path "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd") {
+        $env:Path = "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;$env:Path"
+    } elseif (Test-Path "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\az.cmd") {
+        $env:Path = "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin;$env:Path"
+    } else {
+        throw "Azure CLI not found. Install from https://aka.ms/install-azure-cli"
+    }
 }
 
 if ($SwitchAccount) {
@@ -157,6 +165,10 @@ if ($Module -contains "all") {
 Write-Host "`nTarget Profile: RG=$Resource | Env=$EnvironmentName | Loc=$Location | Mode=$ScaleMode (minReplicas=$MinReplicas)" -ForegroundColor Cyan
 Write-Host "Active Modules: Stores=$deployStores | Auth=$deployAuth | SERMS=$deploySerms | OCR=$deployOcr | PRS=$deployPrs | CMS=$deployCms | TS=$deployTicketing" -ForegroundColor DarkCyan
 
+if ($deployCms -and $RegistryMode -eq "ghcr" -and -not $CmsImageTag) {
+    throw "CMS requires -CmsImageTag with the published CMS commit SHA."
+}
+
 if ($DryRun) {
     Write-Host "`n[DRY RUN] Configuration validated successfully. Exiting." -ForegroundColor Green
     return
@@ -189,18 +201,41 @@ if ($SyncProxy) {
 # --------------------------------------------------------------------------
 # 2. Deploy Core Infrastructure (main.bicep)
 # --------------------------------------------------------------------------
-Write-Host "`n[1/4] Core infrastructure (Resource Group + Environment + Storage)..." -ForegroundColor Green
-az group create --name $Resource --location $Location --output none
-
 $deployAcr = ($RegistryMode -eq "acr")
-$coreDeploy = az deployment group create `
-    --resource-group $Resource `
-    --name "capstone-core-infra" `
-    --template-file (Join-Path $InfraRoot "infra\main.bicep") `
-    --parameters location=$Location environmentName=$EnvironmentName deployAcr=$deployAcr `
-    --query "properties.outputs" -o json | ConvertFrom-Json
+$coreDeploy = $null
+$envExists = $false
+try {
+    $envCheck = az containerapp env show --name $EnvironmentName --resource-group $Resource --query id -o tsv 2>$null
+    if ($envCheck) { $envExists = $true }
+} catch {
+    $envExists = $false
+}
 
-if ($LASTEXITCODE -ne 0) { throw "Core infra deployment failed." }
+if ($envExists) {
+    Write-Host "`n[1/4] Found existing Container Apps environment '$EnvironmentName' in '$Resource'..." -ForegroundColor Green
+    $Location = az containerapp env show --name $EnvironmentName --resource-group $Resource --query location -o tsv 2>$null
+} else {
+    Write-Host "`n[1/4] Core infrastructure (Resource Group + Environment + Storage)..." -ForegroundColor Green
+    az group create --name $Resource --location $Location --output none
+
+    $coreDeploy = az deployment group create `
+        --resource-group $Resource `
+        --name "capstone-core-infra" `
+        --template-file (Join-Path $InfraRoot "infra\main.bicep") `
+        --parameters location=$Location environmentName=$EnvironmentName deployAcr=$deployAcr `
+        --query "properties.outputs" -o json | ConvertFrom-Json
+
+    if ($LASTEXITCODE -ne 0) { throw "Core infra deployment failed." }
+}
+
+# If deploying CMS without auth, ensure data stores are enabled if missing
+if ($deployCms -and -not $deployAuth) {
+    $storesApp = az containerapp list --resource-group $Resource --query "[?name=='shared-mysql'].id" -o tsv 2>$null
+    if (-not $storesApp) {
+        Write-Host "Enabling shared data stores (MySQL, Redis, Postgres, MongoDB) for CMS..." -ForegroundColor Cyan
+        $deployStores = $true
+    }
+}
 
 $acrName = if ($coreDeploy.acrName) { $coreDeploy.acrName.value } else { "" }
 if ($RegistryMode -eq "acr") {
@@ -274,6 +309,7 @@ $allParams = [ordered]@{}
 $allParams["location"]        = $Location
 $allParams["environmentName"] = $EnvironmentName
 $allParams["imageTag"]        = $ImageTag
+if ($CmsImageTag) { $allParams["cmsImageTag"] = $CmsImageTag }
 $allParams["minReplicas"]     = $MinReplicas
 $allParams["registryMode"]    = $RegistryMode
 $allParams["registryServer"]  = $regServer
@@ -289,6 +325,14 @@ $allParams["deployOcr"]       = $deployOcr
 $allParams["deployPrs"]       = $deployPrs
 $allParams["deployCms"]       = $deployCms
 $allParams["deployTicketing"] = $deployTicketing
+
+# A CMS-only deployment reuses the stores in the existing managed environment.
+if ($deployCms -and -not $deployStores) {
+    $allParams["externalMysqlHost"]    = "shared-mysql"
+    $allParams["externalRedisHost"]    = "shared-redis"
+    $allParams["externalPostgresHost"] = "shared-postgres"
+    $allParams["externalMongoHost"]    = "shared-mongo"
+}
 
 # External Subgroup URLs from config
 $sub = $cfg.subgroups
@@ -317,22 +361,28 @@ $allParams["brevoWebhookHeader"] = if ($ext.brevoWebhookHeader) { $ext.brevoWebh
 
 # Ingest secrets
 foreach ($p in $secrets.PSObject.Properties) {
-    if (-not $p.Name.StartsWith('//')) { $allParams[$p.Name] = $p.Value }
+    if (-not $p.Name.StartsWith('//') -and $p.Name -notin @('ghcrUsername', 'ghcrToken')) {
+        $allParams[$p.Name] = $p.Value
+    }
 }
 
 $inner = @{}
 foreach ($k in $allParams.Keys) { $inner[$k] = @{ value = $allParams[$k] } }
-$paramFile = Join-Path $env:TEMP "capstone-apps-params.json"
-@{ parameters = $inner } | ConvertTo-Json -Depth 8 | Set-Content -Path $paramFile -Encoding utf8
+$paramFile = [IO.Path]::GetTempFileName()
+try {
+    @{ parameters = $inner } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $paramFile -Encoding utf8
 
-$appsDeploy = az deployment group create `
-    --resource-group $Resource `
-    --name "capstone-apps-deploy" `
-    --template-file (Join-Path $InfraRoot "infra\apps.bicep") `
-    --parameters "@$paramFile" `
-    --query "properties.outputs" -o json | ConvertFrom-Json
+    $appsDeploy = az deployment group create `
+        --resource-group $Resource `
+        --name "capstone-apps-deploy" `
+        --template-file (Join-Path $InfraRoot "infra\apps.bicep") `
+        --parameters "@$paramFile" `
+        --query "properties.outputs" -o json | ConvertFrom-Json
 
-if ($LASTEXITCODE -ne 0) { throw "Container apps deployment failed." }
+    if ($LASTEXITCODE -ne 0) { throw "Container apps deployment failed." }
+} finally {
+    Remove-Item -LiteralPath $paramFile -Force
+}
 
 
 # --------------------------------------------------------------------------
@@ -365,11 +415,20 @@ if ($deployPrs -and $appsDeploy.prsWebFqdn) {
     $cfg.subgroups.prs | Add-Member -NotePropertyName 'apiUrl' -NotePropertyValue $fqdns["prsApi"] -Force
 }
 if ($deployCms -and $appsDeploy.cmsWebFqdn) {
-    $fqdns["cmsWeb"] = "http://$($appsDeploy.cmsWebFqdn.value)"
+    $webFqdn = $appsDeploy.cmsWebFqdn.value
+    $unifiedUrl = "https://$webFqdn"
+    $fqdns["cmsUnifiedGateway"] = $unifiedUrl
     if (-not $cfg.subgroups.PSObject.Properties['cms']) {
         $cfg.subgroups | Add-Member -NotePropertyName 'cms' -NotePropertyValue ([pscustomobject]@{}) -Force
     }
-    $cfg.subgroups.cms | Add-Member -NotePropertyName 'webUrl' -NotePropertyValue $fqdns["cmsWeb"] -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'mode' -NotePropertyValue 'external' -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'webUrl' -NotePropertyValue $unifiedUrl -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'vendorUrl' -NotePropertyValue $unifiedUrl -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'contractUrl' -NotePropertyValue $unifiedUrl -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'searchUrl' -NotePropertyValue $unifiedUrl -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'notificationUrl' -NotePropertyValue $unifiedUrl -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'aiUrl' -NotePropertyValue $unifiedUrl -Force
+    $cfg.subgroups.cms | Add-Member -NotePropertyName 'analyticsUrl' -NotePropertyValue $unifiedUrl -Force
 }
 if ($deployTicketing -and $appsDeploy.ticketingWebFqdn) {
     $fqdns["ticketingWeb"] = "http://$($appsDeploy.ticketingWebFqdn.value)"

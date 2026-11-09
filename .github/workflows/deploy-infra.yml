@@ -23,6 +23,9 @@ on:
           - cms
           - ticketing
           - all
+      cms_image_tag:
+        description: 'Published CMS commit SHA (required for cms or all)'
+        type: string
       scale_mode:
         description: 'Scale profile (Serverless = 0 minReplicas, WarmDemo = 1 minReplicas)'
         required: true
@@ -64,6 +67,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Core Infrastructure Deployment
+        if: inputs.module != 'cms'
         run: |
           az group create -n ${{ env.RG }} -l ${{ env.LOCATION }} -o none
           az deployment group create -g ${{ env.RG }} -n capstone-core-infra \
@@ -71,6 +75,16 @@ jobs:
             -p location=${{ env.LOCATION }} environmentName=${{ env.ENV }} deployAcr=false deployStorage=true
 
       - name: Container Apps Deployment
+        env:
+          CMS_IMAGE_TAG: ${{ inputs.cms_image_tag }}
+          CMS_APP_KEY: ${{ secrets.CMS_APP_KEY }}
+          CMS_FIELD_ENCRYPTION_KEY: ${{ secrets.CMS_FIELD_ENCRYPTION_KEY }}
+          CMS_POSTGRES_USERNAME: ${{ vars.CMS_POSTGRES_USERNAME }}
+          CMS_POSTGRES_PASSWORD: ${{ secrets.CMS_POSTGRES_PASSWORD }}
+          CMS_MEILISEARCH_URL: ${{ vars.CMS_MEILISEARCH_URL }}
+          CMS_MEILISEARCH_KEY: ${{ secrets.CMS_MEILISEARCH_KEY }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           SCALE="${{ github.event.inputs.scale_mode || 'Serverless' }}"
           MIN_REPLICAS=0
@@ -99,9 +113,54 @@ jobs:
             DEPLOY_TICKETING=true
           fi
 
+          LOCATION="${{ env.LOCATION }}"
+          cms_params=()
+          if [ "$DEPLOY_CMS" = true ]; then
+            if [[ ! "$CMS_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+              echo '::error::Provide the published 40-character CMS commit SHA.'
+              exit 1
+            fi
+            for setting in CMS_APP_KEY CMS_FIELD_ENCRYPTION_KEY CMS_POSTGRES_USERNAME CMS_POSTGRES_PASSWORD CMS_MEILISEARCH_URL CMS_MEILISEARCH_KEY GHCR_USERNAME GHCR_TOKEN; do
+              if [ -z "${!setting}" ]; then
+                echo "::error::Missing CMS deployment setting: $setting"
+                exit 1
+              fi
+            done
+            cms_params+=(
+              "cmsImageTag=$CMS_IMAGE_TAG"
+              "cmsAppKey=$CMS_APP_KEY"
+              "cmsFieldEncryptionKey=$CMS_FIELD_ENCRYPTION_KEY"
+              "cmsPostgresUsername=$CMS_POSTGRES_USERNAME"
+              "cmsPostgresPassword=$CMS_POSTGRES_PASSWORD"
+              "cmsMeilisearchUrl=$CMS_MEILISEARCH_URL"
+              "cmsMeilisearchKey=$CMS_MEILISEARCH_KEY"
+              "registryUser=$GHCR_USERNAME"
+              "registryPassword=$GHCR_TOKEN"
+            )
+          fi
+          if [ "$MOD" = cms ]; then
+            LOCATION=$(az containerapp env show -g "$RG" -n "$ENV" --query location -o tsv)
+            cms_params+=(externalMysqlHost=shared-mysql externalRedisHost=shared-redis externalPostgresHost=shared-postgres externalMongoHost=shared-mongo)
+          fi
+          if [ "$DEPLOY_AUTH" = true ] && [ "$DEPLOY_CMS" = false ]; then
+            # A core redeploy must keep the CMS routes already configured on the gateway.
+            cms_routes=$(az containerapp list -g "$RG" --query "[?name=='auth-proxy'].properties.template.containers[].env[] | [?starts_with(name, 'CMS_')].[name,value]" -o tsv)
+            while IFS=$'\t' read -r name url; do
+              case "$name" in
+                CMS_WEB_URL) cms_params+=("externalCmsWebUrl=$url") ;;
+                CMS_VENDOR_URL) cms_params+=("externalCmsVendorUrl=$url") ;;
+                CMS_CONTRACT_URL) cms_params+=("externalCmsContractUrl=$url") ;;
+                CMS_SEARCH_URL) cms_params+=("externalCmsSearchUrl=$url") ;;
+                CMS_NOTIFICATION_URL) cms_params+=("externalCmsNotificationUrl=$url") ;;
+                CMS_AI_URL) cms_params+=("externalCmsAiUrl=$url") ;;
+                CMS_ANALYTICS_URL) cms_params+=("externalCmsAnalyticsUrl=$url") ;;
+              esac
+            done <<< "$cms_routes"
+          fi
+
           az deployment group create -g ${{ env.RG }} -n capstone-apps-deploy \
             -f infra/apps.bicep \
-            -p location=${{ env.LOCATION }} environmentName=${{ env.ENV }} \
+            -p location="$LOCATION" environmentName=${{ env.ENV }} \
                imageTag=${{ env.IMAGE_TAG }} minReplicas=$MIN_REPLICAS \
                registryMode=ghcr registryServer="ghcr.io/scientific-biotech-specialties-inc" \
                deployStores=$DEPLOY_STORES deployAuth=$DEPLOY_AUTH deploySerms=$DEPLOY_SERMS deployOcr=$DEPLOY_OCR \
@@ -117,4 +176,5 @@ jobs:
                aiServiceApiKey="${{ secrets.AI_SERVICE_API_KEY }}" \
                prsApiKey="${{ secrets.PRS_API_KEY }}" \
                brevoApiKey="${{ secrets.BREVO_API_KEY }}" \
-               mailPassword="${{ secrets.MAIL_PASSWORD }}"
+               mailPassword="${{ secrets.MAIL_PASSWORD }}" \
+               "${cms_params[@]}"

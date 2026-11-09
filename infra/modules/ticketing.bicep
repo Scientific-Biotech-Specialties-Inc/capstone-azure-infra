@@ -17,7 +17,7 @@ param registryUser string = ''
 @secure()
 param registryPassword string = ''
 
-var hasRegistry = !empty(registryServer) && !empty(registryUser)
+var hasRegistry = !empty(registryServer) && !empty(registryUser) && !empty(registryPassword)
 var registryConfig = hasRegistry ? [
   {
     server: registryServer

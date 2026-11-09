@@ -36,13 +36,13 @@
                               },
                       "cms":  {
                                   "mode":  "external",
-                                  "webUrl":  "",
-                                  "vendorUrl":  "",
-                                  "contractUrl":  "",
-                                  "searchUrl":  "",
-                                  "notificationUrl":  "",
-                                  "aiUrl":  "",
-                                  "analyticsUrl":  ""
+                                  "webUrl":  "https://cms-web.agreeableisland-711d23fa.eastasia.azurecontainerapps.io",
+                                  "vendorUrl":  "https://cms-web.agreeableisland-711d23fa.eastasia.azurecontainerapps.io",
+                                  "contractUrl":  "https://cms-web.agreeableisland-711d23fa.eastasia.azurecontainerapps.io",
+                                  "searchUrl":  "https://cms-web.agreeableisland-711d23fa.eastasia.azurecontainerapps.io",
+                                  "notificationUrl":  "https://cms-web.agreeableisland-711d23fa.eastasia.azurecontainerapps.io",
+                                  "aiUrl":  "https://cms-web.agreeableisland-711d23fa.eastasia.azurecontainerapps.io",
+                                  "analyticsUrl":  "https://cms-web.agreeableisland-711d23fa.eastasia.azurecontainerapps.io"
                               },
                       "ticketing":  {
                                         "mode":  "external",

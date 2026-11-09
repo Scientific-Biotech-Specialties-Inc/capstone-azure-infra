@@ -4,3 +4,23 @@
 CREATE DATABASE IF NOT EXISTS `capstone_auth`
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS `cms_vendor_management`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS `cms_contract_management`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS `cms_search`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS `cms_notification`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS `cms_analytics_service`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
